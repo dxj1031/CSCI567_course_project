@@ -14,14 +14,15 @@ module purge
 module load conda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
-conda create -y --prefix "$ENV_PREFIX" python=3.11
-conda activate "$ENV_PREFIX"
+conda create -y --prefix "$ENV_PREFIX" python=3.11 pip
 
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
-python -m pip install -r "$PROJECT_ROOT/requirements-baseline.txt"
+export PYTHONNOUSERSITE=1
 
-python - <<'PY'
+"$ENV_PREFIX/bin/python" -m pip install --upgrade pip setuptools wheel
+"$ENV_PREFIX/bin/python" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+"$ENV_PREFIX/bin/python" -m pip install --no-cache-dir -r "$PROJECT_ROOT/requirements-baseline.txt"
+
+"$ENV_PREFIX/bin/python" - <<'PY'
 import torch
 print("torch_version =", torch.__version__)
 print("cuda_available =", torch.cuda.is_available())
@@ -30,4 +31,3 @@ if torch.cuda.is_available():
 PY
 
 echo "Environment ready at $ENV_PREFIX"
-

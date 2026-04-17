@@ -8,13 +8,12 @@ fi
 
 module purge
 module load conda
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$ENV_PREFIX"
 
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src"
+export PYTHONNOUSERSITE=1
 
-CMD=(python scripts/train_baseline.py --config "$CONFIG_PATH")
+CMD=("$ENV_PREFIX/bin/python" scripts/train_baseline.py --config "$CONFIG_PATH")
 
 if [[ "${SMOKE:-0}" == "1" ]]; then
   CMD+=(--smoke)

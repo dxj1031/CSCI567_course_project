@@ -74,13 +74,11 @@ Inside the allocation:
 cd /project2/<PI>_<project_id>/cs567-cct20
 module purge
 module load conda
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /project2/<PI>_<project_id>/envs/cs567-baseline
 
 export PYTHONPATH=$PWD/src
 export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
-python scripts/train_baseline.py --config configs/cross_location_resnet18.yaml --validate-only
+/project2/<PI>_<project_id>/envs/cs567-baseline/bin/python scripts/train_baseline.py --config configs/cross_location_resnet18.yaml --validate-only
 ```
 
 ## 5. Submit GPU Jobs
@@ -120,6 +118,6 @@ The day/night configs already remove `squirrel` so the label space stays consist
 ## 7. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
+- Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
 - Keep editing code locally in VSCode and sync through GitHub.
 - Use CARC OnDemand only when you need remote IDE access or quick remote inspection.
-
