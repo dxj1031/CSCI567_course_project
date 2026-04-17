@@ -133,6 +133,40 @@ def read_split(spec: SplitSpec) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def resolve_images_dir(images_dir: Path, dataframes: dict[str, pd.DataFrame]) -> Path:
+    candidates = [images_dir]
+    if images_dir.exists():
+        candidates.extend(sorted(path for path in images_dir.iterdir() if path.is_dir()))
+
+    sample_files: list[str] = []
+    for frame in dataframes.values():
+        if frame.empty:
+            continue
+        sample_files.extend(frame["file_name"].head(10).tolist())
+        if len(sample_files) >= 20:
+            break
+
+    sample_files = list(dict.fromkeys(sample_files))
+    if not sample_files:
+        raise ValueError("No image file names were available to resolve the image directory.")
+
+    best_candidate = images_dir
+    best_match_count = -1
+    for candidate in candidates:
+        match_count = sum((candidate / file_name).exists() for file_name in sample_files)
+        if match_count > best_match_count:
+            best_candidate = candidate
+            best_match_count = match_count
+        if match_count == len(sample_files):
+            return candidate
+
+    checked = [str(path) for path in candidates]
+    raise FileNotFoundError(
+        f"Could not resolve an image root under {images_dir}. "
+        f"Checked candidates: {checked}. Best match count: {best_match_count}/{len(sample_files)}"
+    )
+
+
 def apply_label_space(
     dataframes: dict[str, pd.DataFrame],
     explicit_class_names: list[str] | None,
@@ -405,7 +439,7 @@ def resolve_run_dir(output_root: Path, experiment_name: str) -> Path:
 def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
     set_seed(int(config.get("seed", 42)))
 
-    images_dir = Path(config["paths"]["images_dir"])
+    configured_images_dir = Path(config["paths"]["images_dir"])
     output_root = Path(config["paths"]["output_root"])
     output_root.mkdir(parents=True, exist_ok=True)
     run_dir = resolve_run_dir(output_root, config["experiment_name"])
@@ -420,6 +454,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
 
     explicit_class_names = config.get("label_space", {}).get("class_names")
     dataframes, class_names = apply_label_space(dataframes, explicit_class_names)
+    images_dir = resolve_images_dir(configured_images_dir, dataframes)
     verify_image_paths(dataframes, images_dir)
 
     training_cfg = copy.deepcopy(config["training"])
@@ -446,7 +481,8 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
 
     forward_check = run_forward_check(model, loaders["train"], device)
     dataset_summary = {
-        "images_dir": str(images_dir),
+        "configured_images_dir": str(configured_images_dir),
+        "resolved_images_dir": str(images_dir),
         "device": str(device),
         "class_names": class_names,
         "class_to_idx": class_to_idx,
