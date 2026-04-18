@@ -37,6 +37,12 @@ def setup_plot_style() -> None:
     plt.rcParams["savefig.dpi"] = 200
 
 
+def add_normalized_gap(trend_df: pd.DataFrame) -> pd.DataFrame:
+    frame = trend_df.copy()
+    frame["normalized_gap"] = frame["drop_accuracy"] / frame["in_domain_accuracy"]
+    return frame
+
+
 def save_capacity_trend_lines(trend_df: pd.DataFrame, output_path: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
 
@@ -58,18 +64,18 @@ def save_capacity_trend_lines(trend_df: pd.DataFrame, output_path: Path) -> None
     sns.lineplot(
         data=trend_df,
         x="depth",
-        y="drop_accuracy",
+        y="normalized_gap",
         hue="scenario",
         marker="o",
         linewidth=2.5,
         ax=axes[1],
         legend=False,
     )
-    axes[1].set_title("Generalization Drop vs Model Depth")
+    axes[1].set_title("Normalized Gap vs Model Depth")
     axes[1].set_xlabel("ResNet Depth")
-    axes[1].set_ylabel("Generalization Drop")
+    axes[1].set_ylabel("Normalized Gap (gap / in-domain accuracy)")
     axes[1].set_xticks(sorted(trend_df["depth"].dropna().unique()))
-    axes[1].set_ylim(0.0, trend_df["drop_accuracy"].max() + 0.1)
+    axes[1].set_ylim(0.0, min(1.0, trend_df["normalized_gap"].max() + 0.1))
 
     handles, labels = axes[0].get_legend_handles_labels()
     axes[0].legend(handles=handles, labels=labels, title="Scenario", frameon=True)
@@ -82,7 +88,7 @@ def save_capacity_tradeoff_scatter(trend_df: pd.DataFrame, output_path: Path) ->
 
     sns.scatterplot(
         data=trend_df,
-        x="drop_accuracy",
+        x="normalized_gap",
         y="out_of_domain_accuracy",
         hue="scenario",
         size="depth",
@@ -92,14 +98,14 @@ def save_capacity_tradeoff_scatter(trend_df: pd.DataFrame, output_path: Path) ->
 
     for _, row in trend_df.iterrows():
         ax.text(
-            row["drop_accuracy"] + 0.003,
+            row["normalized_gap"] + 0.003,
             row["out_of_domain_accuracy"] + 0.003,
             row["backbone"],
             fontsize=10,
         )
 
-    ax.set_title("Capacity Trade-off: Gap vs OOD Accuracy")
-    ax.set_xlabel("Generalization Drop")
+    ax.set_title("Capacity Trade-off: Normalized Gap vs OOD Accuracy")
+    ax.set_xlabel("Normalized Gap (gap / in-domain accuracy)")
     ax.set_ylabel("Out-of-Domain Accuracy")
     ax.legend(title="Scenario / Depth", frameon=True)
     fig.savefig(output_path, bbox_inches="tight")
@@ -162,6 +168,7 @@ def main() -> None:
         ["scenario", "depth", "backbone"],
         na_position="last",
     )
+    trend_df = add_normalized_gap(trend_df)
 
     setup_plot_style()
     line_plot_path = output_dir / "capacity_trend_lines.png"

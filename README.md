@@ -191,8 +191,8 @@ $ENV_PREFIX/bin/python scripts/plot_capacity_results.py \
 
 This writes:
 
-- `capacity_trend_lines.png`: OOD accuracy and generalization drop as a function of model depth
-- `capacity_tradeoff_scatter.png`: trade-off view of OOD accuracy vs generalization drop
+- `capacity_trend_lines.png`: OOD accuracy and normalized gap (`gap / in-domain accuracy`) as a function of model depth
+- `capacity_tradeoff_scatter.png`: trade-off view of OOD accuracy vs normalized gap
 - `capacity_in_out_bar_grid.png`: per-scenario in-domain vs out-of-domain accuracy bars across backbones
 
 ## 10. Notes
