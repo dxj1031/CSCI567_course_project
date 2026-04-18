@@ -176,7 +176,26 @@ This writes:
 
 When interpreting the results, compare whether increasing depth shrinks the same-domain-to-shifted-domain gap. If deeper models improve both in-domain and shifted-domain metrics but the shifted-domain drop remains large or grows with depth, then capacity alone is unlikely to fully explain the generalization failure.
 
-## 9. Notes
+## 9. Plot Capacity Results
+
+To generate more intuitive figures for the report, create plots directly from the comparison CSVs:
+
+```bash
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+
+$ENV_PREFIX/bin/python scripts/plot_capacity_results.py \
+  --comparison-dir "$PROJECT_ROOT/artifacts/capacity_comparison" \
+  --output-dir "$PROJECT_ROOT/artifacts/capacity_plots"
+```
+
+This writes:
+
+- `capacity_trend_lines.png`: OOD accuracy and generalization drop as a function of model depth
+- `capacity_tradeoff_scatter.png`: trade-off view of OOD accuracy vs generalization drop
+- `capacity_in_out_bar_grid.png`: per-scenario in-domain vs out-of-domain accuracy bars across backbones
+
+## 10. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
