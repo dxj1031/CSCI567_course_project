@@ -125,6 +125,121 @@ def build_capacity_delta_table(splits_df: pd.DataFrame) -> pd.DataFrame:
     return pivot.sort_values(["scenario", "split"]).reset_index(drop=True)
 
 
+def infer_transfer_domains(scenario: str) -> tuple[str | None, str | None]:
+    match = re.search(r"([a-z0-9]+)_to_([a-z0-9]+)", scenario.lower())
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def classify_split_domain(split_name: str, scenario: str) -> str | None:
+    split_lower = split_name.lower()
+    tokens = set(re.findall(r"[a-z0-9]+", split_lower))
+    source_domain, target_domain = infer_transfer_domains(scenario)
+
+    if target_domain and target_domain in tokens:
+        return "out"
+    if source_domain and source_domain in tokens:
+        return "in"
+
+    in_keywords = {"train", "val", "in", "source", "cis"}
+    out_keywords = {"test", "ood", "target", "out", "trans"}
+
+    has_in_keyword = bool(tokens & in_keywords)
+    has_out_keyword = bool(tokens & out_keywords)
+
+    if has_in_keyword and not has_out_keyword:
+        return "in"
+    if has_out_keyword and not has_in_keyword:
+        return "out"
+    return None
+
+
+def build_generalization_drop_table(splits_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "scenario",
+        "backbone",
+        "in_domain_accuracy",
+        "out_of_domain_accuracy",
+        "drop_accuracy",
+        "relative_drop",
+    ]
+    if splits_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+    grouped = splits_df.groupby(["scenario", "backbone"], sort=True)
+
+    for (scenario, backbone), frame in grouped:
+        classified = frame.copy()
+        classified["domain_role"] = classified["split"].map(lambda split_name: classify_split_domain(split_name, scenario))
+
+        in_domain = classified[classified["domain_role"] == "in"]
+        out_of_domain = classified[classified["domain_role"] == "out"]
+
+        if in_domain.empty or out_of_domain.empty:
+            continue
+
+        in_domain_accuracy = float(in_domain["accuracy"].mean())
+        out_of_domain_accuracy = float(out_of_domain["accuracy"].mean())
+        drop_accuracy = in_domain_accuracy - out_of_domain_accuracy
+        relative_drop = drop_accuracy / in_domain_accuracy if in_domain_accuracy else None
+
+        rows.append(
+            {
+                "scenario": scenario,
+                "backbone": backbone,
+                "in_domain_accuracy": in_domain_accuracy,
+                "out_of_domain_accuracy": out_of_domain_accuracy,
+                "drop_accuracy": drop_accuracy,
+                "relative_drop": relative_drop,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    return pd.DataFrame(rows).sort_values(["scenario", "backbone"]).reset_index(drop=True)
+
+
+def build_drop_comparison_table(drop_df: pd.DataFrame) -> pd.DataFrame:
+    if drop_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "scenario",
+                "in_domain_accuracy_resnet18",
+                "out_of_domain_accuracy_resnet18",
+                "drop_accuracy_resnet18",
+                "relative_drop_resnet18",
+                "in_domain_accuracy_resnet50",
+                "out_of_domain_accuracy_resnet50",
+                "drop_accuracy_resnet50",
+                "relative_drop_resnet50",
+                "drop_delta",
+                "relative_drop_delta",
+            ]
+        )
+
+    pivot = drop_df.pivot_table(
+        index="scenario",
+        columns="backbone",
+        values=["in_domain_accuracy", "out_of_domain_accuracy", "drop_accuracy", "relative_drop"],
+        aggfunc="first",
+    )
+    if pivot.empty:
+        return pd.DataFrame()
+
+    pivot.columns = [f"{metric}_{backbone}" for metric, backbone in pivot.columns]
+    pivot = pivot.reset_index()
+
+    if {"drop_accuracy_resnet18", "drop_accuracy_resnet50"}.issubset(pivot.columns):
+        pivot["drop_delta"] = pivot["drop_accuracy_resnet50"] - pivot["drop_accuracy_resnet18"]
+    if {"relative_drop_resnet18", "relative_drop_resnet50"}.issubset(pivot.columns):
+        pivot["relative_drop_delta"] = pivot["relative_drop_resnet50"] - pivot["relative_drop_resnet18"]
+
+    return pivot.sort_values(["scenario"]).reset_index(drop=True)
+
+
 def dataframe_to_markdown(df: pd.DataFrame) -> str:
     if df.empty:
         return "_No rows._"
@@ -193,10 +308,13 @@ def main() -> None:
     summary_paths = find_summary_files(results_root)
     runs_df, splits_df = build_run_rows(summary_paths)
     delta_df = build_capacity_delta_table(splits_df)
+    drop_df = build_generalization_drop_table(splits_df)
+    drop_comparison_df = build_drop_comparison_table(drop_df)
 
     runs_df.to_csv(output_dir / "capacity_runs.csv", index=False)
     splits_df.to_csv(output_dir / "capacity_split_metrics.csv", index=False)
     delta_df.to_csv(output_dir / "capacity_deltas.csv", index=False)
+    drop_comparison_df.to_csv(output_dir / "capacity_drop_comparison.csv", index=False)
     write_markdown(output_dir / "capacity_comparison.md", runs_df, delta_df)
 
     payload = {
@@ -206,6 +324,7 @@ def main() -> None:
         "runs_csv": str(output_dir / "capacity_runs.csv"),
         "split_metrics_csv": str(output_dir / "capacity_split_metrics.csv"),
         "delta_csv": str(output_dir / "capacity_deltas.csv"),
+        "drop_comparison_csv": str(output_dir / "capacity_drop_comparison.csv"),
         "markdown_report": str(output_dir / "capacity_comparison.md"),
     }
     print(json.dumps(payload, indent=2))
