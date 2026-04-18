@@ -49,6 +49,24 @@ def find_summary_files(results_root: Path) -> list[Path]:
     return sorted(path for path in results_root.glob("*/summary.json") if path.is_file())
 
 
+def select_preferred_summary_paths(summary_paths: list[Path]) -> list[Path]:
+    selected: dict[str, tuple[float, int, str, Path]] = {}
+
+    for summary_path in summary_paths:
+        summary = load_json(summary_path)
+        experiment_name = summary["experiment_name"]
+        best_score = float(summary.get("best_score", float("-inf")))
+        best_epoch = int(summary.get("best_epoch", -1))
+        run_dir = str(summary_path.parent)
+        candidate = (best_score, best_epoch, run_dir, summary_path)
+
+        current = selected.get(experiment_name)
+        if current is None or candidate[:3] > current[:3]:
+            selected[experiment_name] = candidate
+
+    return sorted(candidate[3] for candidate in selected.values())
+
+
 def build_run_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
     run_rows: list[dict[str, Any]] = []
     split_rows: list[dict[str, Any]] = []
@@ -305,7 +323,8 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary_paths = find_summary_files(results_root)
+    discovered_summary_paths = find_summary_files(results_root)
+    summary_paths = select_preferred_summary_paths(discovered_summary_paths)
     runs_df, splits_df = build_run_rows(summary_paths)
     delta_df = build_capacity_delta_table(splits_df)
     drop_df = build_generalization_drop_table(splits_df)
@@ -321,6 +340,7 @@ def main() -> None:
         "results_root": str(results_root),
         "output_dir": str(output_dir),
         "summary_file_count": len(summary_paths),
+        "discovered_summary_file_count": len(discovered_summary_paths),
         "runs_csv": str(output_dir / "capacity_runs.csv"),
         "split_metrics_csv": str(output_dir / "capacity_split_metrics.csv"),
         "delta_csv": str(output_dir / "capacity_deltas.csv"),
