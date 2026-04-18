@@ -110,17 +110,23 @@ Outputs land in `/scratch1/$USER/cs567_runs/<experiment>_<timestamp>/`. Copy the
 ## 6. Current Baseline Configs
 
 - `configs/cross_location_resnet18.yaml`
+- `configs/cross_location_resnet34.yaml`
 - `configs/day_to_night_resnet18.yaml`
+- `configs/day_to_night_resnet34.yaml`
 - `configs/night_to_day_resnet18.yaml`
+- `configs/night_to_day_resnet34.yaml`
 - `configs/cross_location_resnet50.yaml`
 - `configs/day_to_night_resnet50.yaml`
 - `configs/night_to_day_resnet50.yaml`
+- `configs/cross_location_resnet101.yaml`
+- `configs/day_to_night_resnet101.yaml`
+- `configs/night_to_day_resnet101.yaml`
 
 The day/night configs already remove `squirrel` so the label space stays consistent across the 10-class cross-time experiments.
 
-## 7. ResNet-50 Capacity Follow-Up
+## 7. Capacity Follow-Up
 
-To test the hypothesis that generalization failure is partly caused by insufficient model capacity, rerun the same three experiment scenarios with `resnet50`:
+To test the hypothesis that generalization failure is partly caused by insufficient model capacity, rerun the same three experiment scenarios with deeper backbones while keeping the same training recipe:
 
 ```bash
 export ACCOUNT=<project_id>
@@ -129,16 +135,24 @@ export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
+bash scripts/submit_train.sh configs/cross_location_resnet34.yaml
+bash scripts/submit_train.sh configs/day_to_night_resnet34.yaml
+bash scripts/submit_train.sh configs/night_to_day_resnet34.yaml
+
 bash scripts/submit_train.sh configs/cross_location_resnet50.yaml
 bash scripts/submit_train.sh configs/day_to_night_resnet50.yaml
 bash scripts/submit_train.sh configs/night_to_day_resnet50.yaml
+
+bash scripts/submit_train.sh configs/cross_location_resnet101.yaml
+bash scripts/submit_train.sh configs/day_to_night_resnet101.yaml
+bash scripts/submit_train.sh configs/night_to_day_resnet101.yaml
 ```
 
-The code already supports both `resnet18` and `resnet50`, so no training-code changes are needed for this follow-up. The new configs only switch the model backbone while keeping the baseline training recipe fixed.
+The code now supports `resnet18`, `resnet34`, `resnet50`, and `resnet101`, so no further training-code changes are needed for this follow-up. The configs only switch the model backbone while keeping the baseline training recipe fixed.
 
-## 8. Compare ResNet-18 vs ResNet-50
+## 8. Compare Capacity Trends
 
-Once both backbones have finished, aggregate the summaries into comparison tables:
+Once the backbone runs have finished, aggregate the summaries into comparison tables:
 
 ```bash
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
@@ -154,10 +168,13 @@ This writes:
 
 - `capacity_runs.csv`: one row per experiment run
 - `capacity_split_metrics.csv`: one row per split
-- `capacity_deltas.csv`: paired `resnet50 - resnet18` deltas
+- `capacity_deltas.csv`: paired `resnet50 - resnet18` deltas for backward-compatible reporting
+- `capacity_drop_comparison.csv`: paired `resnet50 - resnet18` generalization-drop deltas
+- `capacity_trend.csv`: per-scenario backbone trend table across depths
+- `capacity_trend_summary.csv`: scenario-level trend direction summary
 - `capacity_comparison.md`: a markdown summary you can share with teammates or reuse in the report
 
-When interpreting the results, compare whether `resnet50` shrinks the same-domain-to-shifted-domain gap. If `resnet50` improves both in-domain and shifted-domain metrics but the shifted-domain drop remains large, then capacity alone is unlikely to fully explain the generalization failure.
+When interpreting the results, compare whether increasing depth shrinks the same-domain-to-shifted-domain gap. If deeper models improve both in-domain and shifted-domain metrics but the shifted-domain drop remains large or grows with depth, then capacity alone is unlikely to fully explain the generalization failure.
 
 ## 9. Notes
 

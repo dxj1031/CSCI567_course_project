@@ -256,9 +256,15 @@ def build_model(model_name: str, num_classes: int, pretrained: bool) -> nn.Modul
     if model_name == "resnet18":
         weights = models.ResNet18_Weights.DEFAULT if pretrained else None
         model = models.resnet18(weights=weights)
+    elif model_name == "resnet34":
+        weights = models.ResNet34_Weights.DEFAULT if pretrained else None
+        model = models.resnet34(weights=weights)
     elif model_name == "resnet50":
         weights = models.ResNet50_Weights.DEFAULT if pretrained else None
         model = models.resnet50(weights=weights)
+    elif model_name == "resnet101":
+        weights = models.ResNet101_Weights.DEFAULT if pretrained else None
+        model = models.resnet101(weights=weights)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 

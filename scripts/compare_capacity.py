@@ -12,7 +12,7 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Aggregate ResNet-18/ResNet-50 experiment summaries for capacity comparisons."
+        description="Aggregate ResNet backbone experiment summaries for capacity comparisons."
     )
     parser.add_argument(
         "--results-root",
@@ -33,16 +33,21 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def infer_backbone(experiment_name: str) -> str:
-    lowered = experiment_name.lower()
-    if "resnet18" in lowered:
-        return "resnet18"
-    if "resnet50" in lowered:
-        return "resnet50"
-    return "unknown"
+    match = re.search(r"resnet(18|34|50|101)", experiment_name.lower())
+    if not match:
+        return "unknown"
+    return f"resnet{match.group(1)}"
 
 
 def infer_scenario(experiment_name: str) -> str:
-    return re.sub(r"_resnet(18|50)$", "", experiment_name)
+    return re.sub(r"_resnet(18|34|50|101)$", "", experiment_name)
+
+
+def infer_backbone_depth(backbone: str) -> int | None:
+    match = re.search(r"(\d+)$", backbone.lower())
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def find_summary_files(results_root: Path) -> list[Path]:
@@ -82,6 +87,7 @@ def build_run_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFram
             "experiment_name": experiment_name,
             "scenario": scenario,
             "backbone": backbone,
+            "depth": infer_backbone_depth(backbone),
             "run_dir": run_dir,
             "best_epoch": summary.get("best_epoch"),
             "selection_metric": summary.get("selection_metric"),
@@ -101,6 +107,7 @@ def build_run_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFram
                     "experiment_name": experiment_name,
                     "scenario": scenario,
                     "backbone": backbone,
+                    "depth": infer_backbone_depth(backbone),
                     "run_dir": run_dir,
                     "split": split_name,
                     "accuracy": split_metrics["accuracy"],
@@ -110,8 +117,16 @@ def build_run_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFram
 
         run_rows.append(run_row)
 
-    runs_df = pd.DataFrame(run_rows).sort_values(["scenario", "backbone", "experiment_name"]).reset_index(drop=True)
-    splits_df = pd.DataFrame(split_rows).sort_values(["scenario", "split", "backbone"]).reset_index(drop=True)
+    runs_df = (
+        pd.DataFrame(run_rows)
+        .sort_values(["scenario", "depth", "backbone", "experiment_name"], na_position="last")
+        .reset_index(drop=True)
+    )
+    splits_df = (
+        pd.DataFrame(split_rows)
+        .sort_values(["scenario", "split", "depth", "backbone"], na_position="last")
+        .reset_index(drop=True)
+    )
     return runs_df, splits_df
 
 
@@ -177,6 +192,7 @@ def build_generalization_drop_table(splits_df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "scenario",
         "backbone",
+        "depth",
         "in_domain_accuracy",
         "out_of_domain_accuracy",
         "drop_accuracy",
@@ -207,6 +223,7 @@ def build_generalization_drop_table(splits_df: pd.DataFrame) -> pd.DataFrame:
             {
                 "scenario": scenario,
                 "backbone": backbone,
+                "depth": infer_backbone_depth(backbone),
                 "in_domain_accuracy": in_domain_accuracy,
                 "out_of_domain_accuracy": out_of_domain_accuracy,
                 "drop_accuracy": drop_accuracy,
@@ -217,7 +234,11 @@ def build_generalization_drop_table(splits_df: pd.DataFrame) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=columns)
 
-    return pd.DataFrame(rows).sort_values(["scenario", "backbone"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["scenario", "depth", "backbone"], na_position="last")
+        .reset_index(drop=True)
+    )
 
 
 def build_drop_comparison_table(drop_df: pd.DataFrame) -> pd.DataFrame:
@@ -258,6 +279,80 @@ def build_drop_comparison_table(drop_df: pd.DataFrame) -> pd.DataFrame:
     return pivot.sort_values(["scenario"]).reset_index(drop=True)
 
 
+def build_capacity_trend_table(drop_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "scenario",
+        "backbone",
+        "depth",
+        "in_domain_accuracy",
+        "out_of_domain_accuracy",
+        "drop_accuracy",
+    ]
+    if drop_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    trend_df = drop_df.copy()
+    if "depth" not in trend_df.columns:
+        trend_df["depth"] = trend_df["backbone"].map(infer_backbone_depth)
+
+    trend_df = trend_df[
+        [
+            "scenario",
+            "backbone",
+            "depth",
+            "in_domain_accuracy",
+            "out_of_domain_accuracy",
+            "drop_accuracy",
+        ]
+    ]
+    return trend_df.sort_values(["scenario", "depth", "backbone"], na_position="last").reset_index(drop=True)
+
+
+def safe_correlation(x: pd.Series, y: pd.Series) -> float | None:
+    paired = pd.concat([x, y], axis=1).dropna()
+    if len(paired) < 2:
+        return None
+    if paired.iloc[:, 0].nunique() < 2 or paired.iloc[:, 1].nunique() < 2:
+        return None
+    return float(paired.iloc[:, 0].corr(paired.iloc[:, 1]))
+
+
+def classify_drop_trend(correlation: float | None, threshold: float = 0.1) -> str:
+    if correlation is None or pd.isna(correlation) or abs(correlation) < threshold:
+        return "flat"
+    return "positive" if correlation > 0 else "negative"
+
+
+def classify_performance_trend(correlation: float | None, threshold: float = 0.1) -> str:
+    if correlation is None or pd.isna(correlation) or correlation <= threshold:
+        return "flat"
+    return "positive"
+
+
+def build_capacity_trend_summary_table(trend_df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["scenario", "drop_trend", "performance_trend"]
+    if trend_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, Any]] = []
+
+    for scenario, frame in trend_df.groupby("scenario", sort=True):
+        ordered = frame.sort_values(["depth", "backbone"], na_position="last").reset_index(drop=True)
+
+        drop_corr = safe_correlation(ordered["depth"], ordered["drop_accuracy"])
+        performance_corr = safe_correlation(ordered["depth"], ordered["out_of_domain_accuracy"])
+
+        rows.append(
+            {
+                "scenario": scenario,
+                "drop_trend": classify_drop_trend(drop_corr),
+                "performance_trend": classify_performance_trend(performance_corr),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns).sort_values("scenario").reset_index(drop=True)
+
+
 def dataframe_to_markdown(df: pd.DataFrame) -> str:
     if df.empty:
         return "_No rows._"
@@ -291,7 +386,7 @@ def write_markdown(
     lines = [
         "# Capacity Comparison",
         "",
-        "This table compares ResNet-18 and ResNet-50 runs for the same CCT20 experiment scenarios.",
+        "This table compares ResNet backbone runs for the same CCT20 experiment scenarios.",
         "",
     ]
 
@@ -329,11 +424,15 @@ def main() -> None:
     delta_df = build_capacity_delta_table(splits_df)
     drop_df = build_generalization_drop_table(splits_df)
     drop_comparison_df = build_drop_comparison_table(drop_df)
+    trend_df = build_capacity_trend_table(drop_df)
+    trend_summary_df = build_capacity_trend_summary_table(trend_df)
 
     runs_df.to_csv(output_dir / "capacity_runs.csv", index=False)
     splits_df.to_csv(output_dir / "capacity_split_metrics.csv", index=False)
     delta_df.to_csv(output_dir / "capacity_deltas.csv", index=False)
     drop_comparison_df.to_csv(output_dir / "capacity_drop_comparison.csv", index=False)
+    trend_df.to_csv(output_dir / "capacity_trend.csv", index=False)
+    trend_summary_df.to_csv(output_dir / "capacity_trend_summary.csv", index=False)
     write_markdown(output_dir / "capacity_comparison.md", runs_df, delta_df)
 
     payload = {
@@ -345,6 +444,8 @@ def main() -> None:
         "split_metrics_csv": str(output_dir / "capacity_split_metrics.csv"),
         "delta_csv": str(output_dir / "capacity_deltas.csv"),
         "drop_comparison_csv": str(output_dir / "capacity_drop_comparison.csv"),
+        "trend_csv": str(output_dir / "capacity_trend.csv"),
+        "trend_summary_csv": str(output_dir / "capacity_trend_summary.csv"),
         "markdown_report": str(output_dir / "capacity_comparison.md"),
     }
     print(json.dumps(payload, indent=2))
