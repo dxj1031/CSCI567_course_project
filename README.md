@@ -195,7 +195,86 @@ This writes:
 - `capacity_tradeoff_scatter.png`: trade-off view of OOD accuracy vs normalized gap
 - `capacity_in_out_bar_grid.png`: per-scenario in-domain vs out-of-domain accuracy bars across backbones
 
-## 10. Notes
+## 10. ResNet50 Data Intervention Follow-Up
+
+To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two dataset copies:
+
+- `dataset_bg_blur`: blur the background outside a central elliptical region while keeping the center relatively intact
+- `dataset_brightness_aligned`: align day/night brightness statistics using train-split mean/std normalization on the HSV value channel
+
+These scripts only read the original dataset and write new copies elsewhere:
+
+```bash
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+export SOURCE_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
+
+bash experiments/prepare_dataset_variants.sh
+```
+
+This creates:
+
+- `$VARIANT_DATA_ROOT/dataset_bg_blur`
+- `$VARIANT_DATA_ROOT/dataset_brightness_aligned`
+
+Then submit the intervention suite:
+
+```bash
+export ACCOUNT=<project_id>
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+export ORIGINAL_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
+export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
+
+bash experiments/submit_resnet50_data_interventions.sh
+```
+
+The original dataset reuses:
+
+- `configs/cross_location_resnet50.yaml`
+- `configs/day_to_night_resnet50.yaml`
+- `configs/night_to_day_resnet50.yaml`
+
+The intervention configs are:
+
+- `configs/cross_location_resnet50_bg_blur.yaml`
+- `configs/day_to_night_resnet50_bg_blur.yaml`
+- `configs/night_to_day_resnet50_bg_blur.yaml`
+- `configs/cross_location_resnet50_brightness_aligned.yaml`
+- `configs/day_to_night_resnet50_brightness_aligned.yaml`
+- `configs/night_to_day_resnet50_brightness_aligned.yaml`
+
+## 11. Aggregate And Plot Intervention Results
+
+After the ResNet50 original/background/brightness runs finish, aggregate the intervention results:
+
+```bash
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
+
+bash experiments/build_resnet50_intervention_report.sh
+```
+
+This writes artifacts to `$PROJECT_ROOT/artifacts/resnet50_interventions`:
+
+- `intervention_runs.csv`
+- `intervention_split_metrics.csv`
+- `intervention_metrics.csv`
+- `intervention_comparison.md`
+- `intervention_tradeoff_scatter.png`
+- `intervention_in_out_bar_grid.png`
+
+The scatter plot uses:
+
+- X-axis: normalized gap (`gap / in-domain accuracy`)
+- Y-axis: out-of-domain accuracy
+- Color: scenario
+- Marker/text label: dataset variant (`Original`, `Background Blur`, `Brightness Aligned`)
+
+## 12. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.

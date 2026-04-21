@@ -1,0 +1,61 @@
+experiment_name: day_to_night_resnet50_brightness_aligned
+seed: 42
+
+paths:
+  images_dir: ${DATA_ROOT}/images
+  output_root: ${OUTPUT_ROOT}
+
+datasets:
+  train:
+    csv: ${DATA_ROOT}/processed/cct20_train.csv
+    filters:
+      day_night: day
+  val:
+    csv: ${DATA_ROOT}/processed/cct20_val.csv
+    filters:
+      day_night: day
+  tests:
+    val_night:
+      csv: ${DATA_ROOT}/processed/cct20_val.csv
+      filters:
+        day_night: night
+    cis_night:
+      csv: ${DATA_ROOT}/processed/cct20_cis.csv
+      filters:
+        day_night: night
+    trans_night:
+      csv: ${DATA_ROOT}/processed/cct20_trans.csv
+      filters:
+        day_night: night
+
+label_space:
+  class_names:
+    - bird
+    - bobcat
+    - cat
+    - coyote
+    - dog
+    - opossum
+    - rabbit
+    - raccoon
+    - rodent
+    - skunk
+
+model:
+  name: resnet50
+  pretrained: true
+  img_size: 224
+
+training:
+  batch_size: 32
+  epochs: 15
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  num_workers: 4
+  early_stopping_patience: 3
+  selection_metric: macro_f1
+  limit_train_batches: null
+  limit_eval_batches: null
+
+system:
+  device: auto
