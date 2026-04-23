@@ -20,11 +20,11 @@ from compare_capacity import (
 
 VARIANT_LABELS = {
     "original": "Original",
-    "bg_blur": "Background Blur",
-    "brightness_aligned": "Brightness Aligned",
+    "sam_bg": "SAM Background",
+    "histmatch": "Histogram Match",
 }
 
-VARIANT_ORDER = ["original", "bg_blur", "brightness_aligned"]
+VARIANT_ORDER = ["original", "sam_bg", "histmatch"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +48,10 @@ def infer_variant(experiment_name: str) -> str | None:
     name = experiment_name.lower()
     if not name.startswith(("cross_location_resnet50", "day_to_night_resnet50", "night_to_day_resnet50")):
         return None
-    if name.endswith("_bg_blur"):
-        return "bg_blur"
-    if name.endswith("_brightness_aligned"):
-        return "brightness_aligned"
+    if name.endswith("_sam_bg"):
+        return "sam_bg"
+    if name.endswith("_histmatch"):
+        return "histmatch"
     if re.search(r"_resnet50$", name):
         return "original"
     return None
@@ -59,7 +59,7 @@ def infer_variant(experiment_name: str) -> str | None:
 
 def infer_scenario(experiment_name: str) -> str | None:
     match = re.match(
-        r"(?P<scenario>.+)_resnet50(?:_(?:bg_blur|brightness_aligned))?$",
+        r"(?P<scenario>.+)_resnet50(?:_(?:sam_bg|histmatch))?$",
         experiment_name.lower(),
     )
     if not match:

@@ -197,26 +197,43 @@ This writes:
 
 ## 10. ResNet50 Data Intervention Follow-Up
 
-To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two dataset copies:
+To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two new dataset copies:
 
-- `dataset_bg_blur`: blur the background outside a central elliptical region while keeping the center relatively intact
-- `dataset_brightness_aligned`: align day/night brightness statistics using train-split mean/std normalization on the HSV value channel
+- `dataset_sam_bg`: use Segment Anything to select the most central foreground mask, keep the animal region unchanged, and blur only the background
+- `dataset_histmatch`: compute train-only day/night brightness histograms on the HSV value channel and histogram-match each image toward the combined train target distribution
 
-These scripts only read the original dataset and write new copies elsewhere:
+These scripts only read the original dataset and write new copies elsewhere. Before generating the new copies, delete the previous CARC-only intervention datasets:
+
+```bash
+export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
+bash experiments/cleanup_old_resnet50_interventions.sh
+```
+
+Install the extra SAM dependency into the CARC environment if needed, and make the SAM checkpoint available on CARC:
+
+```bash
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+$ENV_PREFIX/bin/python -m pip install -r requirements-baseline.txt
+
+export SAM_CHECKPOINT=/project2/<PI>_<project_id>/models/sam_vit_h_4b8939.pth
+```
+
+Then generate the new variants:
 
 ```bash
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export SOURCE_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
+export SAM_CHECKPOINT=/project2/<PI>_<project_id>/models/sam_vit_h_4b8939.pth
 
 bash experiments/prepare_dataset_variants.sh
 ```
 
 This creates:
 
-- `$VARIANT_DATA_ROOT/dataset_bg_blur`
-- `$VARIANT_DATA_ROOT/dataset_brightness_aligned`
+- `$VARIANT_DATA_ROOT/dataset_sam_bg`
+- `$VARIANT_DATA_ROOT/dataset_histmatch`
 
 Then submit the intervention suite:
 
@@ -239,12 +256,12 @@ The original dataset reuses:
 
 The intervention configs are:
 
-- `configs/cross_location_resnet50_bg_blur.yaml`
-- `configs/day_to_night_resnet50_bg_blur.yaml`
-- `configs/night_to_day_resnet50_bg_blur.yaml`
-- `configs/cross_location_resnet50_brightness_aligned.yaml`
-- `configs/day_to_night_resnet50_brightness_aligned.yaml`
-- `configs/night_to_day_resnet50_brightness_aligned.yaml`
+- `configs/cross_location_resnet50_sam_bg.yaml`
+- `configs/day_to_night_resnet50_sam_bg.yaml`
+- `configs/night_to_day_resnet50_sam_bg.yaml`
+- `configs/cross_location_resnet50_histmatch.yaml`
+- `configs/day_to_night_resnet50_histmatch.yaml`
+- `configs/night_to_day_resnet50_histmatch.yaml`
 
 ## 11. Aggregate And Plot Intervention Results
 
@@ -272,11 +289,12 @@ The scatter plot uses:
 - X-axis: normalized gap (`gap / in-domain accuracy`)
 - Y-axis: out-of-domain accuracy
 - Color: scenario
-- Marker/text label: dataset variant (`Original`, `Background Blur`, `Brightness Aligned`)
+- Marker/text label: dataset variant (`Original`, `SAM Background`, `Histogram Match`)
 
 ## 12. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
+- Keep the original Google Drive dataset read-only. All intervention datasets should be written to CARC-only directories such as `/scratch1/$USER/cct20_variants`.
 - Keep editing code locally in VSCode and sync through GitHub.
 - Use CARC OnDemand only when you need remote IDE access or quick remote inspection.

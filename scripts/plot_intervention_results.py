@@ -12,7 +12,7 @@ import seaborn as sns
 from plot_capacity_results import setup_plot_style
 
 
-VARIANT_ORDER = ["original", "bg_blur", "brightness_aligned"]
+VARIANT_ORDER = ["original", "sam_bg", "histmatch"]
 
 
 def parse_args() -> argparse.Namespace:

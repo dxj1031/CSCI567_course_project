@@ -7,4 +7,5 @@ matplotlib
 seaborn
 tqdm
 pyyaml
-
+segment-anything
+opencv-python-headless
