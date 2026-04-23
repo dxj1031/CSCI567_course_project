@@ -199,7 +199,7 @@ This writes:
 
 To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two new dataset copies:
 
-- `dataset_sam_bg`: use Segment Anything to select the most central foreground mask, keep the animal region unchanged, and blur only the background
+- `dataset_sam_bg`: use Segment Anything with annotation bounding-box prompts when available, keep the animal region unchanged, and blur only the background
 - `dataset_histmatch`: compute train-only day/night brightness histograms on the HSV value channel and histogram-match each image toward the combined train target distribution
 
 These scripts only read the original dataset and write new copies elsewhere. Before generating the new copies, delete the previous CARC-only intervention datasets:

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,15 @@ from _common import (
     resolve_source_images_dir,
     save_json,
 )
+
+
+ANNOTATION_JSON_NAMES = [
+    "train_annotations.json",
+    "cis_val_annotations.json",
+    "trans_val_annotations.json",
+    "cis_test_annotations.json",
+    "trans_test_annotations.json",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,34 +64,10 @@ def parse_args() -> argparse.Namespace:
         help="Blur radius applied to the selected foreground mask for smoother edges.",
     )
     parser.add_argument(
-        "--points-per-side",
-        type=int,
-        default=24,
-        help="SAM automatic mask generator points_per_side parameter.",
-    )
-    parser.add_argument(
-        "--pred-iou-thresh",
-        type=float,
-        default=0.88,
-        help="SAM automatic mask generator pred_iou_thresh parameter.",
-    )
-    parser.add_argument(
-        "--stability-score-thresh",
-        type=float,
-        default=0.95,
-        help="SAM automatic mask generator stability_score_thresh parameter.",
-    )
-    parser.add_argument(
-        "--box-nms-thresh",
-        type=float,
-        default=0.7,
-        help="SAM automatic mask generator box_nms_thresh parameter.",
-    )
-    parser.add_argument(
         "--central-box-scale",
         type=float,
         default=0.55,
-        help="Relative width/height of the central box used to pick the foreground mask.",
+        help="Relative width/height of the central fallback box used when no annotation bbox is available.",
     )
     parser.add_argument(
         "--min-mask-area-fraction",
@@ -107,17 +94,9 @@ def resolve_device(device_name: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def build_mask_generator(
-    checkpoint_path: Path,
-    model_type: str,
-    device_name: str,
-    points_per_side: int,
-    pred_iou_thresh: float,
-    stability_score_thresh: float,
-    box_nms_thresh: float,
-):
+def build_predictor(checkpoint_path: Path, model_type: str, device_name: str):
     try:
-        from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+        from segment_anything import SamPredictor, sam_model_registry
     except ImportError as exc:
         raise ImportError(
             "segment_anything is required for the SAM background intervention. "
@@ -126,13 +105,7 @@ def build_mask_generator(
 
     sam = sam_model_registry[model_type](checkpoint=str(checkpoint_path))
     sam.to(device=device_name)
-    return SamAutomaticMaskGenerator(
-        sam,
-        points_per_side=points_per_side,
-        pred_iou_thresh=pred_iou_thresh,
-        stability_score_thresh=stability_score_thresh,
-        box_nms_thresh=box_nms_thresh,
-    )
+    return SamPredictor(sam)
 
 
 def central_box_bounds(width: int, height: int, central_box_scale: float) -> tuple[int, int, int, int]:
@@ -145,84 +118,133 @@ def central_box_bounds(width: int, height: int, central_box_scale: float) -> tup
     return left, top, right, bottom
 
 
-def build_fallback_mask(width: int, height: int, central_box_scale: float) -> np.ndarray:
-    left, top, right, bottom = central_box_bounds(width, height, central_box_scale)
-    mask = np.zeros((height, width), dtype=bool)
-    mask[top:bottom, left:right] = True
-    return mask
+def xywh_to_xyxy(bbox: list[float], width: int, height: int) -> np.ndarray:
+    x, y, w, h = bbox
+    x0 = max(0.0, min(float(width - 1), x))
+    y0 = max(0.0, min(float(height - 1), y))
+    x1 = max(x0 + 1.0, min(float(width), x + w))
+    y1 = max(y0 + 1.0, min(float(height), y + h))
+    return np.array([x0, y0, x1, y1], dtype=np.float32)
 
 
-def score_mask(
-    candidate: dict[str, Any],
-    width: int,
-    height: int,
-    central_box_scale: float,
-    min_mask_area_fraction: float,
-) -> dict[str, Any] | None:
-    segmentation = candidate["segmentation"].astype(bool)
-    image_area = float(width * height)
-    area = float(candidate.get("area", float(segmentation.sum())))
-    area_fraction = area / image_area
-    if area_fraction < min_mask_area_fraction:
-        return None
-
-    left, top, right, bottom = central_box_bounds(width, height, central_box_scale)
-    central_crop = segmentation[top:bottom, left:right]
-    central_overlap = float(central_crop.mean()) if central_crop.size else 0.0
-    center_pixel = bool(segmentation[height // 2, width // 2])
-    large_mask_penalty = max(area_fraction - 0.65, 0.0)
-    ideal_area_score = 1.0 - min(abs(area_fraction - 0.18) / 0.18, 1.0)
-    pred_iou = float(candidate.get("predicted_iou", 0.0))
-    stability_score = float(candidate.get("stability_score", 0.0))
-
-    score = (
-        3.0 * central_overlap
-        + 1.2 * float(center_pixel)
-        + 0.8 * ideal_area_score
-        + 0.5 * pred_iou
-        + 0.5 * stability_score
-        - 1.5 * large_mask_penalty
+def union_bboxes(bboxes: list[list[float]], width: int, height: int) -> np.ndarray:
+    xyxy_boxes = np.array([xywh_to_xyxy(bbox, width, height) for bbox in bboxes], dtype=np.float32)
+    return np.array(
+        [
+            float(xyxy_boxes[:, 0].min()),
+            float(xyxy_boxes[:, 1].min()),
+            float(xyxy_boxes[:, 2].max()),
+            float(xyxy_boxes[:, 3].max()),
+        ],
+        dtype=np.float32,
     )
 
-    return {
-        "score": score,
-        "mask": segmentation,
-        "mask_area_fraction": area_fraction,
-        "central_overlap": central_overlap,
-        "predicted_iou": pred_iou,
-        "stability_score": stability_score,
-    }
+
+def load_annotation_payloads(source_root: Path) -> list[dict[str, Any]]:
+    annotations_dir = source_root / "annotations"
+    archive_path = annotations_dir / "eccv_18_annotations.tar.gz"
+    payloads: list[dict[str, Any]] = []
+
+    if archive_path.exists():
+        with tarfile.open(archive_path, "r:gz") as archive:
+            member_names = {member.name for member in archive.getmembers()}
+            for json_name in ANNOTATION_JSON_NAMES:
+                member_name = f"eccv_18_annotation_files/{json_name}"
+                if member_name not in member_names:
+                    continue
+                extracted = archive.extractfile(member_name)
+                if extracted is None:
+                    continue
+                payloads.append(json.load(extracted))
+        if payloads:
+            return payloads
+
+    for json_name in ANNOTATION_JSON_NAMES:
+        direct_path = annotations_dir / json_name
+        if direct_path.exists():
+            payloads.append(json.loads(direct_path.read_text(encoding="utf-8")))
+
+    return payloads
 
 
-def select_foreground_mask(
-    mask_candidates: list[dict[str, Any]],
+def build_bbox_index(source_root: Path) -> dict[str, list[list[float]]]:
+    payloads = load_annotation_payloads(source_root)
+    bbox_index: dict[str, list[list[float]]] = {}
+
+    for payload in payloads:
+        for annotation in payload.get("annotations", []):
+            image_id = str(annotation.get("image_id", ""))
+            bbox = annotation.get("bbox")
+            if not image_id or bbox is None:
+                continue
+            bbox_index.setdefault(image_id, []).append([float(value) for value in bbox])
+
+    return bbox_index
+
+
+def choose_best_mask(
+    masks: np.ndarray,
+    scores: np.ndarray,
     width: int,
     height: int,
-    central_box_scale: float,
     min_mask_area_fraction: float,
-) -> dict[str, Any]:
-    best: dict[str, Any] | None = None
-    for candidate in mask_candidates:
-        scored = score_mask(candidate, width, height, central_box_scale, min_mask_area_fraction)
-        if scored is None:
+) -> tuple[np.ndarray, float]:
+    best_mask: np.ndarray | None = None
+    best_score = float("-inf")
+    image_area = float(width * height)
+
+    for mask, score in zip(masks, scores):
+        mask = mask.astype(bool)
+        area_fraction = float(mask.sum()) / image_area
+        if area_fraction < min_mask_area_fraction:
             continue
-        if best is None or scored["score"] > best["score"]:
-            best = scored
 
-    if best is not None:
-        best["selection_source"] = "sam"
-        return best
+        too_large_penalty = max(area_fraction - 0.8, 0.0)
+        adjusted_score = float(score) - 0.5 * too_large_penalty
+        if adjusted_score > best_score:
+            best_score = adjusted_score
+            best_mask = mask
 
-    fallback_mask = build_fallback_mask(width, height, central_box_scale)
-    return {
-        "score": 0.0,
-        "mask": fallback_mask,
-        "mask_area_fraction": float(fallback_mask.mean()),
-        "central_overlap": 1.0,
-        "predicted_iou": None,
-        "stability_score": None,
-        "selection_source": "fallback_central_box",
-    }
+    if best_mask is None:
+        best_index = int(np.argmax(scores))
+        best_mask = masks[best_index].astype(bool)
+        best_score = float(scores[best_index])
+
+    return best_mask, best_score
+
+
+def build_prompt_points(width: int, height: int, box_xyxy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    x0, y0, x1, y1 = box_xyxy.tolist()
+    cx = 0.5 * (x0 + x1)
+    cy = 0.5 * (y0 + y1)
+    margin = 10.0
+    negative_points = [
+        [margin, margin],
+        [width - margin, margin],
+        [margin, height - margin],
+        [width - margin, height - margin],
+    ]
+    point_coords = np.array([[cx, cy], *negative_points], dtype=np.float32)
+    point_labels = np.array([1, 0, 0, 0, 0], dtype=np.int32)
+    return point_coords, point_labels
+
+
+def predict_mask_from_box(
+    predictor,
+    rgb: np.ndarray,
+    box_xyxy: np.ndarray,
+    min_mask_area_fraction: float,
+) -> tuple[np.ndarray, float]:
+    height, width = rgb.shape[:2]
+    predictor.set_image(rgb)
+    point_coords, point_labels = build_prompt_points(width, height, box_xyxy)
+    masks, scores, _ = predictor.predict(
+        point_coords=point_coords,
+        point_labels=point_labels,
+        box=box_xyxy,
+        multimask_output=True,
+    )
+    return choose_best_mask(masks, scores, width, height, min_mask_area_fraction)
 
 
 def apply_background_suppression(
@@ -265,56 +287,65 @@ def main() -> None:
     copy_processed_metadata(source_root, variant_root)
     output_images_dir = variant_root / "images"
 
-    mask_generator = build_mask_generator(
+    bbox_index = build_bbox_index(source_root)
+    predictor = build_predictor(
         checkpoint_path=checkpoint_path,
         model_type=args.model_type,
         device_name=device_name,
-        points_per_side=args.points_per_side,
-        pred_iou_thresh=args.pred_iou_thresh,
-        stability_score_thresh=args.stability_score_thresh,
-        box_nms_thresh=args.box_nms_thresh,
     )
 
     selection_rows: list[dict[str, Any]] = []
     fallback_count = 0
+    annotation_prompt_count = 0
 
     for row in master.itertuples(index=False):
         input_path = source_images_dir / row.file_name
         output_path = output_images_dir / row.file_name
+        image_id = Path(row.file_name).stem
 
         with Image.open(input_path) as image:
             image = image.convert("RGB")
             rgb = np.asarray(image)
             height, width = rgb.shape[:2]
-            mask_candidates = mask_generator.generate(rgb)
-            selected = select_foreground_mask(
-                mask_candidates=mask_candidates,
-                width=width,
-                height=height,
-                central_box_scale=args.central_box_scale,
+
+            bboxes = bbox_index.get(image_id, [])
+            if bboxes:
+                box_xyxy = union_bboxes(bboxes, width, height)
+                selection_source = "annotation_bbox_prompt"
+                annotation_prompt_count += 1
+            else:
+                box_xyxy = np.array(central_box_bounds(width, height, args.central_box_scale), dtype=np.float32)
+                selection_source = "fallback_central_box_prompt"
+                fallback_count += 1
+
+            foreground_mask, sam_score = predict_mask_from_box(
+                predictor=predictor,
+                rgb=rgb,
+                box_xyxy=box_xyxy,
                 min_mask_area_fraction=args.min_mask_area_fraction,
             )
+
             transformed = apply_background_suppression(
                 image=image,
-                foreground_mask=selected["mask"],
+                foreground_mask=foreground_mask,
                 blur_radius=args.blur_radius,
                 mask_feather=args.mask_feather,
             )
             save_image(transformed, output_path)
-
-        if selected["selection_source"] != "sam":
-            fallback_count += 1
 
         selection_rows.append(
             {
                 "file_name": row.file_name,
                 "split": getattr(row, "split", None),
                 "day_night": getattr(row, "day_night", None),
-                "selection_source": selected["selection_source"],
-                "mask_area_fraction": selected["mask_area_fraction"],
-                "central_overlap": selected["central_overlap"],
-                "predicted_iou": selected["predicted_iou"],
-                "stability_score": selected["stability_score"],
+                "selection_source": selection_source,
+                "mask_area_fraction": float(foreground_mask.mean()),
+                "sam_score": sam_score,
+                "prompt_box_x0": float(box_xyxy[0]),
+                "prompt_box_y0": float(box_xyxy[1]),
+                "prompt_box_x1": float(box_xyxy[2]),
+                "prompt_box_y1": float(box_xyxy[3]),
+                "num_annotation_boxes": len(bboxes),
             }
         )
 
@@ -332,18 +363,15 @@ def main() -> None:
             "model_type": args.model_type,
             "device": device_name,
             "seed": args.seed,
-            "points_per_side": args.points_per_side,
-            "pred_iou_thresh": args.pred_iou_thresh,
-            "stability_score_thresh": args.stability_score_thresh,
-            "box_nms_thresh": args.box_nms_thresh,
         },
         "intervention": {
             "type": "sam_background_suppression",
-            "selection_strategy": "automatic_mask_generation_with_largest_central_object_heuristic",
+            "selection_strategy": "sam_predictor_with_annotation_bbox_prompt_else_central_box_prompt",
             "blur_radius": args.blur_radius,
             "mask_feather": args.mask_feather,
             "central_box_scale": args.central_box_scale,
             "min_mask_area_fraction": args.min_mask_area_fraction,
+            "annotation_prompt_count": annotation_prompt_count,
             "fallback_central_box_count": fallback_count,
         },
     }
