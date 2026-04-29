@@ -1,4 +1,4 @@
-experiment_name: cross_location_resnet50_sam_bg
+experiment_name: cross_location_resnet50_bbox_bg
 seed: 42
 
 paths:

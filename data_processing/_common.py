@@ -82,9 +82,20 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def build_master_table(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    if "cct20_clean_all" not in tables:
-        raise KeyError("Expected cct20_clean_all.csv to exist in the processed directory.")
+    if "cct20_clean_all" in tables:
+        master = tables["cct20_clean_all"].copy()
+    else:
+        split_tables = [
+            tables[name].copy()
+            for name in ["cct20_train", "cct20_val", "cct20_cis", "cct20_trans"]
+            if name in tables
+        ]
+        if not split_tables:
+            raise KeyError(
+                "Expected cct20_clean_all.csv or at least one split CSV "
+                "among cct20_train/cct20_val/cct20_cis/cct20_trans."
+            )
+        master = pd.concat(split_tables, ignore_index=True)
 
-    master = tables["cct20_clean_all"].copy()
     subset_columns = [column for column in ["file_name", "split", "day_night", "category_name"] if column in master.columns]
     return master[subset_columns].drop_duplicates("file_name").reset_index(drop=True)

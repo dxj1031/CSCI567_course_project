@@ -199,7 +199,7 @@ This writes:
 
 To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two new dataset copies:
 
-- `dataset_sam_bg`: use Segment Anything with annotation bounding-box prompts when available, keep the animal region unchanged, and blur only the background
+- `dataset_bbox_bg`: use the official annotation bounding boxes, keep the boxed animal region unchanged, and blur everything outside the boxes
 - `dataset_histmatch`: compute train-only day/night brightness histograms on the HSV value channel and histogram-match each image toward the combined train target distribution
 
 These scripts only read the original dataset and write new copies elsewhere. Before generating the new copies, delete the previous CARC-only intervention datasets:
@@ -209,13 +209,11 @@ export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
 bash experiments/cleanup_old_resnet50_interventions.sh
 ```
 
-Install the extra SAM dependency into the CARC environment if needed, and make the SAM checkpoint available on CARC:
+Install the baseline dependencies into the CARC environment if needed:
 
 ```bash
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 $ENV_PREFIX/bin/python -m pip install -r requirements-baseline.txt
-
-export SAM_CHECKPOINT=/project2/<PI>_<project_id>/models/sam_vit_h_4b8939.pth
 ```
 
 Then generate the new variants:
@@ -225,14 +223,13 @@ export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export SOURCE_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
-export SAM_CHECKPOINT=/project2/<PI>_<project_id>/models/sam_vit_h_4b8939.pth
 
 bash experiments/prepare_dataset_variants.sh
 ```
 
 This creates:
 
-- `$VARIANT_DATA_ROOT/dataset_sam_bg`
+- `$VARIANT_DATA_ROOT/dataset_bbox_bg`
 - `$VARIANT_DATA_ROOT/dataset_histmatch`
 
 Then submit the intervention suite:
@@ -241,14 +238,13 @@ Then submit the intervention suite:
 export ACCOUNT=<project_id>
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
-export ORIGINAL_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
 bash experiments/submit_resnet50_data_interventions.sh
 ```
 
-The original dataset reuses:
+The original ResNet50 baseline summaries are reused from the existing baseline/capacity runs:
 
 - `configs/cross_location_resnet50.yaml`
 - `configs/day_to_night_resnet50.yaml`
@@ -256,9 +252,9 @@ The original dataset reuses:
 
 The intervention configs are:
 
-- `configs/cross_location_resnet50_sam_bg.yaml`
-- `configs/day_to_night_resnet50_sam_bg.yaml`
-- `configs/night_to_day_resnet50_sam_bg.yaml`
+- `configs/cross_location_resnet50_bbox_bg.yaml`
+- `configs/day_to_night_resnet50_bbox_bg.yaml`
+- `configs/night_to_day_resnet50_bbox_bg.yaml`
 - `configs/cross_location_resnet50_histmatch.yaml`
 - `configs/day_to_night_resnet50_histmatch.yaml`
 - `configs/night_to_day_resnet50_histmatch.yaml`
@@ -289,7 +285,7 @@ The scatter plot uses:
 - X-axis: normalized gap (`gap / in-domain accuracy`)
 - Y-axis: out-of-domain accuracy
 - Color: scenario
-- Marker/text label: dataset variant (`Original`, `SAM Background`, `Histogram Match`)
+- Marker/text label: dataset variant (`Original`, `BBox Background`, `Histogram Match`)
 
 ## 12. Notes
 

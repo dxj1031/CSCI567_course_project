@@ -10,11 +10,14 @@ ROOT_PATH="$(realpath "$VARIANT_DATA_ROOT")"
 TARGETS=(
   "$ROOT_PATH/dataset_bg_blur"
   "$ROOT_PATH/dataset_brightness_aligned"
+  "$ROOT_PATH/dataset_sam_bg"
+  "$ROOT_PATH/dataset_bbox_bg"
+  "$ROOT_PATH/dataset_histmatch"
 )
 
 for TARGET in "${TARGETS[@]}"; do
   case "$TARGET" in
-    "$ROOT_PATH/dataset_bg_blur"|"$ROOT_PATH/dataset_brightness_aligned")
+    "$ROOT_PATH/dataset_bg_blur"|"$ROOT_PATH/dataset_brightness_aligned"|"$ROOT_PATH/dataset_sam_bg"|"$ROOT_PATH/dataset_bbox_bg"|"$ROOT_PATH/dataset_histmatch")
       ;;
     *)
       echo "Refusing to delete unexpected path: $TARGET"

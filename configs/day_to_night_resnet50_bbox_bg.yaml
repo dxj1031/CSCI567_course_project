@@ -1,4 +1,4 @@
-experiment_name: day_to_night_resnet50_brightness_aligned
+experiment_name: day_to_night_resnet50_bbox_bg
 seed: 42
 
 paths:
