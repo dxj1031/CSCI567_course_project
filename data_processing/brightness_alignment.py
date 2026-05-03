@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -75,6 +76,11 @@ def save_image(image: Image.Image, output_path: Path) -> None:
         image.save(output_path)
 
 
+def copy_original_image(input_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(input_path, output_path)
+
+
 def main() -> None:
     args = parse_args()
     source_root = Path(args.source_root).expanduser().resolve()
@@ -121,6 +127,7 @@ def main() -> None:
     }
 
     brightness_after: dict[str, float] = {}
+    copied_original_by_file: dict[str, bool] = {}
     transformed_count = 0
     non_train_unchanged_count = 0
     for row in master.itertuples(index=False):
@@ -133,18 +140,21 @@ def main() -> None:
             if is_train_image and row.day_night in lookup_tables:
                 transformed = apply_histogram_lookup(image, lookup_tables[row.day_night])
                 transformed_count += 1
+                save_image(transformed, output_path)
+                brightness_after[row.file_name] = compute_brightness(transformed)
+                copied_original_by_file[row.file_name] = False
             else:
-                transformed = image
+                copy_original_image(input_path, output_path)
+                brightness_after[row.file_name] = compute_brightness(image)
+                copied_original_by_file[row.file_name] = True
                 if not is_train_image:
                     non_train_unchanged_count += 1
-
-            save_image(transformed, output_path)
-            brightness_after[row.file_name] = compute_brightness(transformed)
 
     brightness_df = pd.DataFrame(brightness_rows)
     brightness_df["brightness_after"] = brightness_df["file_name"].map(brightness_after)
     brightness_df["is_train_image"] = brightness_df["file_name"].isin(train_files)
     brightness_df["was_transformed"] = brightness_df["is_train_image"] & brightness_df["day_night"].isin(lookup_tables)
+    brightness_df["original_file_copied"] = brightness_df["file_name"].map(copied_original_by_file)
     brightness_df.to_csv(variant_root / "metadata" / "brightness_statistics.csv", index=False)
 
     histogram_df = pd.DataFrame(
@@ -185,6 +195,7 @@ def main() -> None:
             "target_mode": args.target_mode,
             "target_distribution": "combined_train_day_and_night_histogram",
             "fit_statistics_source": "training_split_only",
+            "non_train_file_handling": "byte-for-byte copy from source images",
             "train_transformed_count": transformed_count,
             "non_train_unchanged_count": non_train_unchanged_count,
             "train_group_statistics": train_group_statistics,

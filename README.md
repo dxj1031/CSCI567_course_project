@@ -230,6 +230,17 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 bash experiments/submit_train_time_interventions.sh
 ```
 
+Before submitting long jobs, run the validate-only matrix in an interactive allocation to verify paths, split filters, interventions, and one forward pass for every config:
+
+```bash
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+export OUTPUT_ROOT=/scratch1/$USER/cs567_validate_only
+
+bash experiments/validate_train_time_intervention_matrix.sh
+```
+
 Every run writes `dataset_summary.json` with `train_intervention`, `split_interventions`, and sanity checks confirming validation/test splits use no intervention.
 
 ## 11. Aggregate And Plot Intervention Results
@@ -244,18 +255,25 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 bash experiments/build_train_time_intervention_report.sh
 ```
 
-This writes artifacts to `$PROJECT_ROOT/artifacts/train_time_interventions`:
+By default this writes artifacts to a new timestamped directory under `$PROJECT_ROOT/artifacts/`, for example `$PROJECT_ROOT/artifacts/train_time_interventions_20260503_121500`. Set `ARTIFACT_ROOT` only when you intentionally want a specific new output directory.
 
 - `intervention_runs.csv`
 - `intervention_split_metrics.csv`
 - `intervention_metrics.csv` with tidy columns including `backbone`, `scenario`, `variant`, `in_domain_acc`, `ood_acc`, `gap`, `normalized_gap`
 - `intervention_effect_metrics.csv`
+- `experiment_matrix.csv`
+- `missing_runs.csv`
+- `RUN_MANIFEST.md`
 - `intervention_comparison.md`
 - `intervention_ood_accuracy_by_variant.png`
 - `intervention_normalized_gap_by_variant.png`
 - `intervention_tradeoff_scatter.png`
 - `intervention_delta_bar_grid.png`
+- `intervention_delta_ood_accuracy_vs_original.png`
+- `intervention_delta_normalized_gap_vs_original.png`
+- `intervention_backbone_lines_by_scenario.png`
 - `intervention_backbone_comparison.png`
+- `intervention_all_backbones_variants_grid.png`
 
 The scatter plot uses:
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import shutil
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -223,6 +224,21 @@ def save_image(image: Image.Image, output_path: Path) -> None:
         image.save(output_path)
 
 
+def copy_original_image(input_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(input_path, output_path)
+
+
+def build_file_lookup_keys(file_names: set[str]) -> set[str]:
+    lookup_keys: set[str] = set()
+    for file_name in file_names:
+        path = Path(file_name)
+        lookup_keys.add(file_name)
+        lookup_keys.add(path.name)
+        lookup_keys.add(path.stem)
+    return lookup_keys
+
+
 def main() -> None:
     args = parse_args()
     source_root = Path(args.source_root).expanduser().resolve()
@@ -237,6 +253,12 @@ def main() -> None:
 
     bbox_index = build_bbox_index(source_root)
     train_files = set(tables["cct20_train"]["file_name"]) if "cct20_train" in tables else set()
+    train_lookup_keys = build_file_lookup_keys(train_files)
+    bbox_index = {
+        key: records
+        for key, records in bbox_index.items()
+        if key in train_lookup_keys
+    }
 
     selection_rows: list[dict[str, Any]] = []
     missing_bbox_count = 0
@@ -249,6 +271,7 @@ def main() -> None:
         output_path = output_images_dir / row.file_name
         image_id = Path(row.file_name).stem
         is_train_image = row.file_name in train_files
+        copied_original_file = False
 
         with Image.open(input_path) as image:
             image = image.convert("RGB")
@@ -260,6 +283,7 @@ def main() -> None:
                 scaled_boxes = []
                 selection_source = "non_train_image_unchanged"
                 transformed = image
+                copied_original_file = True
                 non_train_unchanged_count += 1
             elif bboxes:
                 foreground_mask, scaled_boxes = build_bbox_mask(
@@ -282,9 +306,13 @@ def main() -> None:
                 scaled_boxes = []
                 selection_source = "train_missing_annotation_bbox_image_unchanged"
                 transformed = image
+                copied_original_file = True
                 missing_bbox_count += 1
 
-            save_image(transformed, output_path)
+            if copied_original_file:
+                copy_original_image(input_path, output_path)
+            else:
+                save_image(transformed, output_path)
 
         selection_rows.append(
             {
@@ -294,6 +322,7 @@ def main() -> None:
                 "selection_source": selection_source,
                 "is_train_image": bool(is_train_image),
                 "was_transformed": selection_source == "train_annotation_bbox",
+                "original_file_copied": copied_original_file,
                 "foreground_area_fraction": float(foreground_mask.mean()),
                 "boxes_xyxy": json.dumps([box.xyxy for box in scaled_boxes]),
                 "annotation_boxes_xywh": json.dumps([box.bbox_xywh for box in scaled_boxes]),
@@ -324,6 +353,9 @@ def main() -> None:
             "blur_radius": args.blur_radius,
             "box_feather": args.box_feather,
             "bbox_padding_fraction": args.bbox_padding_fraction,
+            "annotation_source_scope": "bbox records filtered to training file names before transformation",
+            "train_lookup_key_count": len(train_lookup_keys),
+            "bbox_index_key_count": len(bbox_index),
             "train_transformed_count": train_transformed_count,
             "non_train_unchanged_count": non_train_unchanged_count,
             "annotation_bbox_count": annotation_bbox_count,

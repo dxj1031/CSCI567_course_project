@@ -71,6 +71,11 @@ def copy_processed_metadata(source_root: Path, variant_root: Path) -> None:
 
 def build_variant_root(output_root: Path, variant_name: str) -> Path:
     variant_root = output_root / variant_name
+    if variant_root.exists():
+        raise FileExistsError(
+            f"Refusing to reuse existing dataset variant directory: {variant_root}. "
+            "Choose a new --variant-name or --output-root for a reproducible run."
+        )
     (variant_root / "images").mkdir(parents=True, exist_ok=True)
     (variant_root / "metadata").mkdir(parents=True, exist_ok=True)
     return variant_root

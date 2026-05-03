@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime
 import json
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -464,6 +466,23 @@ def resolve_run_dir(output_root: Path, experiment_name: str) -> Path:
     return run_dir
 
 
+def infer_experiment_fields(experiment_name: str, train_intervention_name: str) -> dict[str, str]:
+    scenario = experiment_name
+    backbone = "unknown"
+    for model_name in ["resnet101", "resnet50", "resnet34", "resnet18"]:
+        token = f"_{model_name}"
+        if token in experiment_name:
+            scenario = experiment_name.split(token)[0]
+            backbone = model_name
+            break
+    variant = "original" if train_intervention_name == "none" else train_intervention_name
+    return {
+        "scenario": scenario,
+        "backbone": backbone,
+        "variant": variant,
+    }
+
+
 def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_intervention_override: str | None = None) -> Path:
     set_seed(int(config.get("seed", 42)))
 
@@ -471,6 +490,8 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
     output_root = Path(config["paths"]["output_root"])
     output_root.mkdir(parents=True, exist_ok=True)
     run_dir = resolve_run_dir(output_root, config["experiment_name"])
+    run_timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    run_id = run_dir.name
 
     train_spec, val_spec, test_specs = build_split_specs(config)
     dataframes = {
@@ -526,6 +547,8 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         for split_name, loader in loaders.items()
     }
     dataset_summary = {
+        "run_id": run_id,
+        "timestamp": run_timestamp,
         "configured_images_dir": str(configured_images_dir),
         "resolved_images_dir": str(images_dir),
         "device": str(device),
@@ -548,6 +571,32 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
     }
     save_json(run_dir / "dataset_summary.json", dataset_summary)
     save_json(run_dir / "resolved_config.json", config)
+    save_json(
+        run_dir / "run_manifest.json",
+        {
+            "run_id": run_id,
+            "timestamp": run_timestamp,
+            "experiment_name": config["experiment_name"],
+            **infer_experiment_fields(config["experiment_name"], train_intervention_name),
+            "seed": int(config.get("seed", 42)),
+            "config_path": config["_config_path"],
+            "command": " ".join([sys.executable, *sys.argv]),
+            "argv": [sys.executable, *sys.argv],
+            "data_split": {
+                "train": str(train_spec.csv_path),
+                "val": str(val_spec.csv_path),
+                "tests": {spec.name: str(spec.csv_path) for spec in test_specs},
+            },
+            "training_settings": training_cfg,
+            "output_files": {
+                "dataset_summary": str(run_dir / "dataset_summary.json"),
+                "resolved_config": str(run_dir / "resolved_config.json"),
+                "run_manifest": str(run_dir / "run_manifest.json"),
+                "summary": str(run_dir / "summary.json"),
+            },
+            "notes": "Validation and test datasets receive no train-time intervention.",
+        },
+    )
 
     if validate_only:
         print(json.dumps(dataset_summary, indent=2))
@@ -626,6 +675,9 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
 
     summary: dict[str, Any] = {
         "experiment_name": config["experiment_name"],
+        "run_id": run_id,
+        "timestamp": run_timestamp,
+        "seed": int(config.get("seed", 42)),
         "checkpoint": str(checkpoint_path),
         "best_epoch": best_epoch,
         "selection_metric": selection_metric,

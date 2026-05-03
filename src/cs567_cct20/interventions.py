@@ -161,6 +161,7 @@ class BBoxBlurIntervention(TrainImageIntervention):
     def __init__(
         self,
         dataset_root: Path,
+        train_frame: pd.DataFrame,
         blur_radius: float = 8.0,
         box_feather: float = 3.0,
         bbox_padding_fraction: float = 0.02,
@@ -169,7 +170,23 @@ class BBoxBlurIntervention(TrainImageIntervention):
         self.blur_radius = blur_radius
         self.box_feather = box_feather
         self.bbox_padding_fraction = bbox_padding_fraction
-        self.bbox_index = build_bbox_index(dataset_root)
+        self.train_lookup_keys = self.build_train_lookup_keys(train_frame)
+        raw_bbox_index = build_bbox_index(dataset_root)
+        self.bbox_index = {
+            key: records
+            for key, records in raw_bbox_index.items()
+            if key in self.train_lookup_keys
+        }
+
+    @staticmethod
+    def build_train_lookup_keys(train_frame: pd.DataFrame) -> set[str]:
+        lookup_keys: set[str] = set()
+        for file_name in train_frame["file_name"].astype(str).tolist():
+            path = Path(file_name)
+            lookup_keys.add(file_name)
+            lookup_keys.add(path.name)
+            lookup_keys.add(path.stem)
+        return lookup_keys
 
     def __call__(self, image: Image.Image, row: pd.Series) -> Image.Image:
         file_name = str(row["file_name"])
@@ -200,6 +217,7 @@ class BBoxBlurIntervention(TrainImageIntervention):
             "blur_radius": self.blur_radius,
             "box_feather": self.box_feather,
             "bbox_padding_fraction": self.bbox_padding_fraction,
+            "train_lookup_key_count": len(self.train_lookup_keys),
             "bbox_index_key_count": len(self.bbox_index),
         }
 
@@ -294,6 +312,7 @@ def build_train_intervention(
         bbox_params = params.get("bbox_blur", params)
         return BBoxBlurIntervention(
             dataset_root=dataset_root,
+            train_frame=train_frame,
             blur_radius=float(bbox_params.get("blur_radius", 8.0)),
             box_feather=float(bbox_params.get("box_feather", 3.0)),
             bbox_padding_fraction=float(bbox_params.get("bbox_padding_fraction", 0.02)),
