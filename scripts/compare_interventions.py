@@ -14,22 +14,19 @@ from compare_capacity import (
     dataframe_to_markdown,
     find_summary_files,
     load_json,
-    select_preferred_summary_paths,
 )
 
 
 VARIANT_LABELS = {
     "original": "Original",
-    "bbox_bg": "BBox Blur",
-    "histmatch": "Brightness Aligned",
+    "bbox_blur": "BBox Blur",
+    "brightness_aligned": "Brightness Aligned",
 }
 
-VARIANT_ORDER = ["original", "bbox_bg", "histmatch"]
-
-
+VARIANT_ORDER = ["original", "bbox_blur", "brightness_aligned"]
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Aggregate ResNet50 dataset-intervention experiment summaries."
+        description="Aggregate train-time intervention experiment summaries."
     )
     parser.add_argument(
         "--results-root",
@@ -46,25 +43,53 @@ def parse_args() -> argparse.Namespace:
 
 def infer_variant(experiment_name: str) -> str | None:
     name = experiment_name.lower()
-    if not name.startswith(("cross_location_resnet50", "day_to_night_resnet50", "night_to_day_resnet50")):
+    if not re.match(r"(cross_location|day_to_night|night_to_day)_resnet(18|34|50|101)", name):
         return None
-    if name.endswith("_bbox_bg"):
-        return "bbox_bg"
-    if name.endswith("_histmatch"):
-        return "histmatch"
-    if re.search(r"_resnet50$", name):
+    if name.endswith("_bbox_blur") or name.endswith("_bbox_bg"):
+        return "bbox_blur"
+    if name.endswith("_brightness_aligned") or name.endswith("_histmatch"):
+        return "brightness_aligned"
+    if re.search(r"_resnet(18|34|50|101)$", name):
         return "original"
     return None
 
 
 def infer_scenario(experiment_name: str) -> str | None:
     match = re.match(
-        r"(?P<scenario>.+)_resnet50(?:_(?:bbox_bg|histmatch))?$",
+        r"(?P<scenario>.+)_resnet(18|34|50|101)(?:_(?:bbox_blur|brightness_aligned|bbox_bg|histmatch))?$",
         experiment_name.lower(),
     )
     if not match:
         return None
     return match.group("scenario")
+
+
+def infer_backbone(experiment_name: str) -> str | None:
+    match = re.search(r"resnet(18|34|50|101)", experiment_name.lower())
+    if not match:
+        return None
+    return f"resnet{match.group(1)}"
+
+
+def infer_depth(backbone: str | None) -> int | None:
+    if backbone is None:
+        return None
+    match = re.search(r"(\d+)$", backbone)
+    return int(match.group(1)) if match else None
+
+
+def select_latest_summary_paths(summary_paths: list[Path]) -> list[Path]:
+    selected: dict[str, tuple[str, float, Path]] = {}
+    for summary_path in summary_paths:
+        summary = load_json(summary_path)
+        experiment_name = summary["experiment_name"]
+        run_key = summary_path.parent.name
+        modified_time = summary_path.stat().st_mtime
+        candidate = (run_key, modified_time, summary_path)
+        current = selected.get(experiment_name)
+        if current is None or candidate[:2] > current[:2]:
+            selected[experiment_name] = candidate
+    return sorted(candidate[2] for candidate in selected.values())
 
 
 def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -76,13 +101,16 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
         experiment_name = summary["experiment_name"]
         scenario = infer_scenario(experiment_name)
         variant = infer_variant(experiment_name)
-        if scenario is None or variant is None:
+        backbone = infer_backbone(experiment_name)
+        if scenario is None or variant is None or backbone is None:
             continue
 
         run_dir = str(summary_path.parent)
         run_row: dict[str, Any] = {
             "experiment_name": experiment_name,
             "scenario": scenario,
+            "backbone": backbone,
+            "depth": infer_depth(backbone),
             "variant": variant,
             "variant_label": VARIANT_LABELS[variant],
             "run_dir": run_dir,
@@ -103,6 +131,8 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
                 {
                     "experiment_name": experiment_name,
                     "scenario": scenario,
+                    "backbone": backbone,
+                    "depth": infer_depth(backbone),
                     "variant": variant,
                     "variant_label": VARIANT_LABELS[variant],
                     "run_dir": run_dir,
@@ -117,6 +147,8 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
     run_columns = [
         "experiment_name",
         "scenario",
+        "backbone",
+        "depth",
         "variant",
         "variant_label",
         "run_dir",
@@ -127,6 +159,8 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
     split_columns = [
         "experiment_name",
         "scenario",
+        "backbone",
+        "depth",
         "variant",
         "variant_label",
         "run_dir",
@@ -140,32 +174,37 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
         runs_df = pd.DataFrame(columns=run_columns)
     else:
         runs_df["variant"] = pd.Categorical(runs_df["variant"], categories=VARIANT_ORDER, ordered=True)
-        runs_df = runs_df.sort_values(["scenario", "variant", "experiment_name"]).reset_index(drop=True)
+        runs_df = runs_df.sort_values(["scenario", "depth", "variant", "experiment_name"]).reset_index(drop=True)
     if splits_df.empty:
         splits_df = pd.DataFrame(columns=split_columns)
     else:
         splits_df["variant"] = pd.Categorical(splits_df["variant"], categories=VARIANT_ORDER, ordered=True)
-        splits_df = splits_df.sort_values(["scenario", "variant", "split"]).reset_index(drop=True)
+        splits_df = splits_df.sort_values(["scenario", "depth", "variant", "split"]).reset_index(drop=True)
     return runs_df, splits_df
 
 
 def build_intervention_metrics(splits_df: pd.DataFrame) -> pd.DataFrame:
     columns = [
+        "backbone",
         "scenario",
         "variant",
         "variant_label",
-        "in_domain_accuracy",
-        "out_of_domain_accuracy",
-        "gap_accuracy",
+        "in_domain_acc",
+        "ood_acc",
+        "gap",
         "normalized_gap",
     ]
     if splits_df.empty:
         return pd.DataFrame(columns=columns)
 
     rows: list[dict[str, Any]] = []
-    grouped = splits_df.groupby(["scenario", "variant", "variant_label"], sort=True)
+    grouped = splits_df.groupby(
+        ["scenario", "backbone", "depth", "variant", "variant_label"],
+        sort=True,
+        observed=True,
+    )
 
-    for (scenario, variant, variant_label), frame in grouped:
+    for (scenario, backbone, _depth, variant, variant_label), frame in grouped:
         classified = frame.copy()
         classified["domain_role"] = classified["split"].map(
             lambda split_name: classify_split_domain(split_name, scenario)
@@ -183,12 +222,13 @@ def build_intervention_metrics(splits_df: pd.DataFrame) -> pd.DataFrame:
 
         rows.append(
             {
+                "backbone": backbone,
                 "scenario": scenario,
                 "variant": variant,
                 "variant_label": variant_label,
-                "in_domain_accuracy": in_domain_accuracy,
-                "out_of_domain_accuracy": out_of_domain_accuracy,
-                "gap_accuracy": gap_accuracy,
+                "in_domain_acc": in_domain_accuracy,
+                "ood_acc": out_of_domain_accuracy,
+                "gap": gap_accuracy,
                 "normalized_gap": normalized_gap,
             }
         )
@@ -197,7 +237,9 @@ def build_intervention_metrics(splits_df: pd.DataFrame) -> pd.DataFrame:
     if metrics_df.empty:
         return metrics_df
     metrics_df["variant"] = pd.Categorical(metrics_df["variant"], categories=VARIANT_ORDER, ordered=True)
-    return metrics_df.sort_values(["scenario", "variant"]).reset_index(drop=True)
+    metrics_df["depth"] = metrics_df["backbone"].map(infer_depth)
+    metrics_df = metrics_df.sort_values(["scenario", "depth", "variant"]).drop(columns=["depth"]).reset_index(drop=True)
+    return metrics_df
 
 
 def write_markdown(
@@ -206,9 +248,9 @@ def write_markdown(
     metrics_df: pd.DataFrame,
 ) -> None:
     lines = [
-        "# ResNet50 Data Intervention Comparison",
+        "# Train-Time Intervention Comparison",
         "",
-        "This table compares ResNet50 runs across dataset variants for the same camera-trap scenarios.",
+        "This table compares train-only image interventions across backbones and camera-trap scenarios.",
         "",
     ]
 
@@ -239,7 +281,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     discovered_summary_paths = find_summary_files(results_root)
-    summary_paths = select_preferred_summary_paths(discovered_summary_paths)
+    summary_paths = select_latest_summary_paths(discovered_summary_paths)
     runs_df, splits_df = build_intervention_rows(summary_paths)
     metrics_df = build_intervention_metrics(splits_df)
 

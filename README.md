@@ -195,19 +195,21 @@ This writes:
 - `capacity_tradeoff_scatter.png`: trade-off view of OOD accuracy vs normalized gap
 - `capacity_in_out_bar_grid.png`: per-scenario in-domain vs out-of-domain accuracy bars across backbones
 
-## 10. ResNet50 Data Intervention Follow-Up
+## 10. Train-Time Domain Generalization Interventions
 
-To test whether scenario-dependent generalization differences are driven by background reliance or illumination shift, keep the backbone fixed to `resnet50` and create two new dataset copies:
+To test whether source-domain background reliance or brightness variation affects OOD generalization, use train-time interventions only. The validation and test domains are always read from the original CCT20 images and are never blurred, brightness-aligned, or used to fit transformation statistics.
 
-- `dataset_bbox_bg`: use the official annotation bounding boxes, keep the boxed animal region unchanged, and blur everything outside the boxes
-- `dataset_histmatch`: compute train-only day/night brightness histograms on the HSV value channel and histogram-match each image toward the combined train target distribution
+Supported `training.train_intervention` values:
 
-These scripts only read the original dataset and write new copies elsewhere. Before generating the new copies, delete the previous CARC-only intervention datasets:
+- `none`: original training images
+- `bbox_blur`: for training images only, keep annotation bbox regions unchanged and blur background pixels outside the scaled boxes
+- `brightness_aligned`: for training images only, fit HSV value-channel histogram mappings from the training split and apply those mappings to training images
 
-```bash
-export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
-bash experiments/cleanup_old_resnet50_interventions.sh
-```
+The same architecture, optimizer, epochs, seed, splits, and evaluation code are used across variants. The experiment grid covers all combinations of:
+
+- backbones: `resnet18`, `resnet34`, `resnet50`, `resnet101`
+- scenarios: `cross_location`, `day_to_night`, `night_to_day`
+- variants: `original`, `bbox_blur`, `brightness_aligned`
 
 Install the baseline dependencies into the CARC environment if needed:
 
@@ -216,81 +218,57 @@ export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 $ENV_PREFIX/bin/python -m pip install -r requirements-baseline.txt
 ```
 
-Then generate the new variants:
-
-```bash
-export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
-export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
-export SOURCE_DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
-export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
-
-bash experiments/prepare_dataset_variants.sh
-```
-
-This creates:
-
-- `$VARIANT_DATA_ROOT/dataset_bbox_bg`
-- `$VARIANT_DATA_ROOT/dataset_histmatch`
-
-Then submit the intervention suite:
+Then submit the full train-time intervention suite:
 
 ```bash
 export ACCOUNT=<project_id>
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
-export VARIANT_DATA_ROOT=/scratch1/$USER/cct20_variants
+export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
-bash experiments/submit_resnet50_data_interventions.sh
+bash experiments/submit_train_time_interventions.sh
 ```
 
-The original ResNet50 baseline summaries are reused from the existing baseline/capacity runs:
-
-- `configs/cross_location_resnet50.yaml`
-- `configs/day_to_night_resnet50.yaml`
-- `configs/night_to_day_resnet50.yaml`
-
-The intervention configs are:
-
-- `configs/cross_location_resnet50_bbox_bg.yaml`
-- `configs/day_to_night_resnet50_bbox_bg.yaml`
-- `configs/night_to_day_resnet50_bbox_bg.yaml`
-- `configs/cross_location_resnet50_histmatch.yaml`
-- `configs/day_to_night_resnet50_histmatch.yaml`
-- `configs/night_to_day_resnet50_histmatch.yaml`
+Every run writes `dataset_summary.json` with `train_intervention`, `split_interventions`, and sanity checks confirming validation/test splits use no intervention.
 
 ## 11. Aggregate And Plot Intervention Results
 
-After the ResNet50 original/background/brightness runs finish, aggregate the intervention results:
+After the original/bbox/brightness runs finish, aggregate the train-time intervention results:
 
 ```bash
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
-bash experiments/build_resnet50_intervention_report.sh
+bash experiments/build_train_time_intervention_report.sh
 ```
 
-This writes artifacts to `$PROJECT_ROOT/artifacts/resnet50_interventions`:
+This writes artifacts to `$PROJECT_ROOT/artifacts/train_time_interventions`:
 
 - `intervention_runs.csv`
 - `intervention_split_metrics.csv`
-- `intervention_metrics.csv`
+- `intervention_metrics.csv` with tidy columns including `backbone`, `scenario`, `variant`, `in_domain_acc`, `ood_acc`, `gap`, `normalized_gap`
+- `intervention_effect_metrics.csv`
 - `intervention_comparison.md`
+- `intervention_ood_accuracy_by_variant.png`
+- `intervention_normalized_gap_by_variant.png`
 - `intervention_tradeoff_scatter.png`
-- `intervention_in_out_bar_grid.png`
+- `intervention_delta_bar_grid.png`
+- `intervention_backbone_comparison.png`
 
 The scatter plot uses:
 
 - X-axis: normalized gap (`gap / in-domain accuracy`)
 - Y-axis: out-of-domain accuracy
-- Color: scenario
-- Marker/text label: dataset variant (`Original`, `BBox Background`, `Histogram Match`)
+- Color: train-time intervention variant
+- Marker/size: scenario and backbone
 
 ## 12. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
-- Keep the original Google Drive dataset read-only. All intervention datasets should be written to CARC-only directories such as `/scratch1/$USER/cct20_variants`.
+- Keep the original Google Drive dataset read-only.
+- Train-time interventions must not preprocess validation/test data or fit statistics from validation/test domains.
 - Keep editing code locally in VSCode and sync through GitHub.
 - Use CARC OnDemand only when you need remote IDE access or quick remote inspection.

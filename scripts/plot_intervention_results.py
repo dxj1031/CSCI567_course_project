@@ -12,18 +12,19 @@ import seaborn as sns
 from plot_capacity_results import setup_plot_style
 
 
-VARIANT_ORDER = ["original", "bbox_bg", "histmatch"]
 VARIANT_LABELS = {
     "original": "Original",
-    "bbox_bg": "BBox Blur",
-    "histmatch": "Brightness Aligned",
+    "bbox_blur": "BBox Blur",
+    "brightness_aligned": "Brightness Aligned",
 }
 SCENARIO_ORDER = ["cross_location", "day_to_night", "night_to_day"]
+VARIANT_ORDER = ["original", "bbox_blur", "brightness_aligned"]
+BACKBONE_ORDER = ["resnet18", "resnet34", "resnet50", "resnet101"]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create scatter and bar plots for ResNet50 dataset-intervention experiments."
+        description="Create plots for train-time intervention experiments."
     )
     parser.add_argument(
         "--comparison-dir",
@@ -45,7 +46,8 @@ def load_metrics(path: Path) -> pd.DataFrame:
     frame["variant_label"] = frame["variant"].map(VARIANT_LABELS).fillna(frame["variant_label"])
     frame["variant"] = pd.Categorical(frame["variant"], categories=VARIANT_ORDER, ordered=True)
     frame["scenario"] = pd.Categorical(frame["scenario"], categories=SCENARIO_ORDER, ordered=True)
-    return frame.sort_values(["scenario", "variant"]).reset_index(drop=True)
+    frame["backbone"] = pd.Categorical(frame["backbone"], categories=BACKBONE_ORDER, ordered=True)
+    return frame.sort_values(["scenario", "backbone", "variant"]).reset_index(drop=True)
 
 
 def build_effect_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
@@ -54,10 +56,14 @@ def build_effect_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
         "in_domain_accuracy",
         "out_of_domain_accuracy",
         "gap_accuracy",
+        "in_domain_acc",
+        "ood_acc",
+        "gap",
         "normalized_gap",
     ]
+    metric_columns = [column for column in metric_columns if column in metrics_df.columns]
 
-    for scenario, frame in metrics_df.groupby("scenario", observed=True, sort=False):
+    for (scenario, backbone), frame in metrics_df.groupby(["scenario", "backbone"], observed=True, sort=False):
         original = frame[frame["variant"] == "original"]
         if original.empty:
             continue
@@ -66,6 +72,7 @@ def build_effect_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
         for _, row in frame.iterrows():
             effect_row: dict[str, object] = {
                 "scenario": scenario,
+                "backbone": backbone,
                 "variant": row["variant"],
                 "variant_label": row["variant_label"],
             }
@@ -76,41 +83,43 @@ def build_effect_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
             rows.append(effect_row)
 
     if not rows:
-        columns = ["scenario", "variant", "variant_label"]
+        columns = ["scenario", "backbone", "variant", "variant_label"]
         for metric in metric_columns:
             columns.extend([f"original_{metric}", metric, f"delta_{metric}"])
         return pd.DataFrame(columns=columns)
 
     effect_df = pd.DataFrame(rows)
     effect_df["scenario"] = pd.Categorical(effect_df["scenario"], categories=SCENARIO_ORDER, ordered=True)
+    effect_df["backbone"] = pd.Categorical(effect_df["backbone"], categories=BACKBONE_ORDER, ordered=True)
     effect_df["variant"] = pd.Categorical(effect_df["variant"], categories=VARIANT_ORDER, ordered=True)
-    return effect_df.sort_values(["scenario", "variant"]).reset_index(drop=True)
+    return effect_df.sort_values(["scenario", "backbone", "variant"]).reset_index(drop=True)
 
 
 def save_scatter(metrics_df: pd.DataFrame, output_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(12, 8), constrained_layout=True)
     sns.scatterplot(
         data=metrics_df,
         x="normalized_gap",
-        y="out_of_domain_accuracy",
-        hue="scenario",
-        style="variant_label",
-        s=180,
+        y="ood_acc",
+        hue="variant_label",
+        style="scenario",
+        size="backbone",
+        sizes=(80, 260),
         ax=ax,
     )
 
     for _, row in metrics_df.iterrows():
         ax.text(
             row["normalized_gap"] + 0.004,
-            row["out_of_domain_accuracy"] + 0.004,
-            row["variant_label"],
+            row["ood_acc"] + 0.004,
+            row["backbone"],
             fontsize=10,
         )
 
-    ax.set_title("ResNet50 Interventions: Normalized Gap vs OOD Accuracy")
+    ax.set_title("Train-Time Interventions: Normalized Gap vs OOD Accuracy")
     ax.set_xlabel("Normalized Gap (gap / in-domain accuracy)")
     ax.set_ylabel("Out-of-Domain Accuracy")
-    ax.legend(title="Scenario / Variant", frameon=True)
+    ax.legend(title="Variant / Scenario / Backbone", frameon=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -125,7 +134,7 @@ def add_bar_labels(ax: plt.Axes, fmt: str = "{:+.3f}") -> None:
         )
 
 
-def save_bar_grid(metrics_df: pd.DataFrame, output_path: Path) -> None:
+def save_ood_accuracy_by_variant(metrics_df: pd.DataFrame, output_path: Path) -> None:
     scenarios = metrics_df["scenario"].drop_duplicates().tolist()
     fig, axes = plt.subplots(1, len(scenarios), figsize=(6 * len(scenarios), 6), constrained_layout=True)
 
@@ -134,33 +143,20 @@ def save_bar_grid(metrics_df: pd.DataFrame, output_path: Path) -> None:
 
     for ax, scenario in zip(axes, scenarios):
         frame = metrics_df[metrics_df["scenario"] == scenario].copy()
-        long_frame = frame.melt(
-            id_vars=["scenario", "variant", "variant_label"],
-            value_vars=["in_domain_accuracy", "out_of_domain_accuracy"],
-            var_name="domain_type",
-            value_name="accuracy",
-        )
-        long_frame["domain_type"] = long_frame["domain_type"].map(
-            {
-                "in_domain_accuracy": "In-domain",
-                "out_of_domain_accuracy": "Out-of-domain",
-            }
-        )
-
         sns.barplot(
-            data=long_frame,
+            data=frame,
             x="variant_label",
-            y="accuracy",
-            hue="domain_type",
+            y="ood_acc",
+            hue="backbone",
             ax=ax,
         )
         ax.set_title(scenario.replace("_", " ").title())
-        ax.set_xlabel("Dataset Variant")
-        ax.set_ylabel("Accuracy")
-        ax.set_ylim(0.0, min(1.0, long_frame["accuracy"].max() + 0.15))
-        ax.tick_params(axis="x", rotation=25)
+        ax.set_xlabel("Training Variant")
+        ax.set_ylabel("Out-of-Domain Accuracy")
+        ax.set_ylim(0.0, min(1.0, frame["ood_acc"].max() + 0.15))
+        ax.tick_params(axis="x", rotation=20)
 
-    axes[0].legend(title="Evaluation Domain", frameon=True)
+    axes[0].legend(title="Backbone", frameon=True)
     for ax in axes[1:]:
         legend = ax.get_legend()
         if legend is not None:
@@ -170,42 +166,25 @@ def save_bar_grid(metrics_df: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
-def save_variant_trend_lines(metrics_df: pd.DataFrame, output_path: Path) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
+def save_metric_by_variant_lines(metrics_df: pd.DataFrame, output_path: Path, metric: str, title: str, ylabel: str) -> None:
+    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
 
     sns.lineplot(
         data=metrics_df,
         x="variant_label",
-        y="out_of_domain_accuracy",
+        y=metric,
         hue="scenario",
+        style="backbone",
         marker="o",
         linewidth=2.5,
-        ax=axes[0],
+        ax=ax,
     )
-    axes[0].set_title("OOD Accuracy By Dataset Variant")
-    axes[0].set_xlabel("Training Dataset Variant")
-    axes[0].set_ylabel("Out-of-Domain Accuracy")
-    axes[0].tick_params(axis="x", rotation=15)
-    axes[0].set_ylim(0.0, min(1.0, metrics_df["out_of_domain_accuracy"].max() + 0.1))
-
-    sns.lineplot(
-        data=metrics_df,
-        x="variant_label",
-        y="normalized_gap",
-        hue="scenario",
-        marker="o",
-        linewidth=2.5,
-        ax=axes[1],
-        legend=False,
-    )
-    axes[1].set_title("Normalized Gap By Dataset Variant")
-    axes[1].set_xlabel("Training Dataset Variant")
-    axes[1].set_ylabel("Normalized Gap (gap / in-domain accuracy)")
-    axes[1].tick_params(axis="x", rotation=15)
-    axes[1].set_ylim(0.0, min(1.0, metrics_df["normalized_gap"].max() + 0.1))
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(handles=handles, labels=labels, title="Scenario", frameon=True)
+    ax.set_title(title)
+    ax.set_xlabel("Training Variant")
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis="x", rotation=15)
+    ax.set_ylim(0.0, min(1.0, metrics_df[metric].max() + 0.1))
+    ax.legend(title="Scenario / Backbone", frameon=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -218,7 +197,7 @@ def save_effect_delta_grid(effect_df: pd.DataFrame, output_path: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
     plot_specs = [
         (
-            "delta_out_of_domain_accuracy",
+            "delta_ood_acc",
             "Change In OOD Accuracy vs Original",
             "Delta OOD Accuracy (higher is better)",
         ),
@@ -232,14 +211,14 @@ def save_effect_delta_grid(effect_df: pd.DataFrame, output_path: Path) -> None:
     for ax, (metric, title, ylabel) in zip(axes, plot_specs):
         sns.barplot(
             data=intervention_effects,
-            x="scenario",
+            x="backbone",
             y=metric,
             hue="variant_label",
             ax=ax,
         )
         ax.axhline(0.0, color="black", linewidth=1.0)
         ax.set_title(title)
-        ax.set_xlabel("Scenario")
+        ax.set_xlabel("Backbone")
         ax.set_ylabel(ylabel)
         ax.tick_params(axis="x", rotation=20)
         add_bar_labels(ax)
@@ -249,6 +228,39 @@ def save_effect_delta_grid(effect_df: pd.DataFrame, output_path: Path) -> None:
     if legend is not None:
         legend.remove()
 
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_backbone_comparison_grid(metrics_df: pd.DataFrame, output_path: Path) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), constrained_layout=True)
+    specs = [
+        ("ood_acc", "OOD Accuracy", "Out-of-Domain Accuracy"),
+        ("normalized_gap", "Normalized Gap", "Normalized Gap"),
+        ("gap", "Absolute Gap", "Gap"),
+    ]
+
+    for ax, (metric, title, ylabel) in zip(axes, specs):
+        sns.lineplot(
+            data=metrics_df,
+            x="backbone",
+            y=metric,
+            hue="variant_label",
+            style="scenario",
+            marker="o",
+            linewidth=2.0,
+            ax=ax,
+        )
+        ax.set_title(title)
+        ax.set_xlabel("Backbone")
+        ax.set_ylabel(ylabel)
+        ax.tick_params(axis="x", rotation=20)
+
+    axes[0].legend(title="Variant / Scenario", frameon=True)
+    for ax in axes[1:]:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -269,14 +281,22 @@ def main() -> None:
 
     setup_plot_style()
     scatter_path = output_dir / "intervention_tradeoff_scatter.png"
-    bar_grid_path = output_dir / "intervention_in_out_bar_grid.png"
-    trend_lines_path = output_dir / "intervention_variant_trend_lines.png"
+    ood_by_variant_path = output_dir / "intervention_ood_accuracy_by_variant.png"
+    gap_by_variant_path = output_dir / "intervention_normalized_gap_by_variant.png"
     delta_grid_path = output_dir / "intervention_delta_bar_grid.png"
+    backbone_grid_path = output_dir / "intervention_backbone_comparison.png"
 
     save_scatter(metrics_df, scatter_path)
-    save_bar_grid(metrics_df, bar_grid_path)
-    save_variant_trend_lines(metrics_df, trend_lines_path)
+    save_ood_accuracy_by_variant(metrics_df, ood_by_variant_path)
+    save_metric_by_variant_lines(
+        metrics_df,
+        gap_by_variant_path,
+        metric="normalized_gap",
+        title="Normalized Gap By Training Variant",
+        ylabel="Normalized Gap (gap / in-domain accuracy)",
+    )
     save_effect_delta_grid(effect_df, delta_grid_path)
+    save_backbone_comparison_grid(metrics_df, backbone_grid_path)
 
     payload = {
         "comparison_dir": str(comparison_dir),
@@ -284,9 +304,10 @@ def main() -> None:
         "effect_metrics_csv": str(effect_metrics_path),
         "plots": [
             str(scatter_path),
-            str(bar_grid_path),
-            str(trend_lines_path),
+            str(ood_by_variant_path),
+            str(gap_by_variant_path),
             str(delta_grid_path),
+            str(backbone_grid_path),
         ],
     }
     print(json.dumps(payload, indent=2))

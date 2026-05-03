@@ -236,42 +236,54 @@ def main() -> None:
     output_images_dir = variant_root / "images"
 
     bbox_index = build_bbox_index(source_root)
+    train_files = set(tables["cct20_train"]["file_name"]) if "cct20_train" in tables else set()
 
     selection_rows: list[dict[str, Any]] = []
     missing_bbox_count = 0
     annotation_bbox_count = 0
+    train_transformed_count = 0
+    non_train_unchanged_count = 0
 
     for row in master.itertuples(index=False):
         input_path = source_images_dir / row.file_name
         output_path = output_images_dir / row.file_name
         image_id = Path(row.file_name).stem
+        is_train_image = row.file_name in train_files
 
         with Image.open(input_path) as image:
             image = image.convert("RGB")
             width, height = image.size
 
             bboxes = bbox_index.get(image_id, [])
-            if bboxes:
+            if not is_train_image:
+                foreground_mask = np.ones((height, width), dtype=bool)
+                scaled_boxes = []
+                selection_source = "non_train_image_unchanged"
+                transformed = image
+                non_train_unchanged_count += 1
+            elif bboxes:
                 foreground_mask, scaled_boxes = build_bbox_mask(
                     bboxes=bboxes,
                     width=width,
                     height=height,
                     padding=args.bbox_padding_fraction,
                 )
-                selection_source = "annotation_bbox"
+                selection_source = "train_annotation_bbox"
                 annotation_bbox_count += 1
+                train_transformed_count += 1
+                transformed = apply_background_suppression(
+                    image=image,
+                    foreground_mask=foreground_mask,
+                    blur_radius=args.blur_radius,
+                    box_feather=args.box_feather,
+                )
             else:
                 foreground_mask = np.ones((height, width), dtype=bool)
                 scaled_boxes = []
-                selection_source = "missing_annotation_bbox_image_unchanged"
+                selection_source = "train_missing_annotation_bbox_image_unchanged"
+                transformed = image
                 missing_bbox_count += 1
 
-            transformed = apply_background_suppression(
-                image=image,
-                foreground_mask=foreground_mask,
-                blur_radius=args.blur_radius,
-                box_feather=args.box_feather,
-            )
             save_image(transformed, output_path)
 
         selection_rows.append(
@@ -280,6 +292,8 @@ def main() -> None:
                 "split": getattr(row, "split", None),
                 "day_night": getattr(row, "day_night", None),
                 "selection_source": selection_source,
+                "is_train_image": bool(is_train_image),
+                "was_transformed": selection_source == "train_annotation_bbox",
                 "foreground_area_fraction": float(foreground_mask.mean()),
                 "boxes_xyxy": json.dumps([box.xyxy for box in scaled_boxes]),
                 "annotation_boxes_xywh": json.dumps([box.bbox_xywh for box in scaled_boxes]),
@@ -300,14 +314,18 @@ def main() -> None:
         "num_images_processed": int(len(master)),
         "intervention": {
             "type": "bbox_background_blur",
-            "selection_strategy": "scale_annotation_bboxes_preserve_inside_blur_outside",
+            "selection_strategy": "train_only_scale_annotation_bboxes_preserve_inside_blur_outside",
+            "transform_scope": "train_only",
+            "evaluation_scope": "validation_and_test_images_left_original",
             "coordinate_transform": (
                 "bbox xywh is scaled from annotation image size to the loaded image size; "
-                "the original loaded pixels inside scaled boxes are preserved and pixels outside are blurred"
+                "for training images, original loaded pixels inside scaled boxes are preserved and pixels outside are blurred"
             ),
             "blur_radius": args.blur_radius,
             "box_feather": args.box_feather,
             "bbox_padding_fraction": args.bbox_padding_fraction,
+            "train_transformed_count": train_transformed_count,
+            "non_train_unchanged_count": non_train_unchanged_count,
             "annotation_bbox_count": annotation_bbox_count,
             "missing_bbox_count": missing_bbox_count,
         },

@@ -1,4 +1,4 @@
-experiment_name: day_to_night_resnet101
+experiment_name: night_to_day_resnet18_brightness_aligned
 seed: 42
 paths:
   images_dir: ${DATA_ROOT}/images
@@ -7,24 +7,24 @@ datasets:
   train:
     csv: ${DATA_ROOT}/processed/cct20_train.csv
     filters:
-      day_night: day
+      day_night: night
   val:
     csv: ${DATA_ROOT}/processed/cct20_val.csv
     filters:
-      day_night: day
+      day_night: night
   tests:
-    val_night:
+    val_day:
       csv: ${DATA_ROOT}/processed/cct20_val.csv
       filters:
-        day_night: night
-    cis_night:
+        day_night: day
+    cis_day:
       csv: ${DATA_ROOT}/processed/cct20_cis.csv
       filters:
-        day_night: night
-    trans_night:
+        day_night: day
+    trans_day:
       csv: ${DATA_ROOT}/processed/cct20_trans.csv
       filters:
-        day_night: night
+        day_night: day
 label_space:
   class_names:
   - bird
@@ -38,7 +38,7 @@ label_space:
   - rodent
   - skunk
 model:
-  name: resnet101
+  name: resnet18
   pretrained: true
   img_size: 224
 training:
@@ -51,7 +51,7 @@ training:
   selection_metric: macro_f1
   limit_train_batches: null
   limit_eval_batches: null
-  train_intervention: none
+  train_intervention: brightness_aligned
   train_intervention_params: {}
 system:
   device: auto

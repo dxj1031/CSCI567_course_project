@@ -22,11 +22,20 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms as T
 
+from .interventions import TRAIN_INTERVENTIONS, TrainImageIntervention, build_train_intervention
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a CCT20 image classification baseline.")
     parser.add_argument("--config", required=True, help="Path to a YAML experiment config.")
     parser.add_argument("--smoke", action="store_true", help="Run a short 1-epoch smoke pass.")
+    parser.add_argument(
+        "--train-intervention",
+        "--train_intervention",
+        choices=sorted(TRAIN_INTERVENTIONS),
+        default=None,
+        help="Optional train-only image intervention. Overrides training.train_intervention in the YAML config.",
+    )
     parser.add_argument(
         "--validate-only",
         action="store_true",
@@ -77,11 +86,14 @@ class CCT20Dataset(Dataset):
         images_dir: Path,
         class_to_idx: dict[str, int],
         transform: T.Compose,
+        image_intervention: TrainImageIntervention | None = None,
     ) -> None:
         self.frame = frame.reset_index(drop=True).copy()
         self.images_dir = images_dir
         self.class_to_idx = class_to_idx
         self.transform = transform
+        self.image_intervention = image_intervention
+        self.intervention_name = image_intervention.name if image_intervention is not None else "none"
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -90,6 +102,8 @@ class CCT20Dataset(Dataset):
         row = self.frame.iloc[index]
         image_path = self.images_dir / row["file_name"]
         image = Image.open(image_path).convert("RGB")
+        if self.image_intervention is not None:
+            image = self.image_intervention(image, row)
         image = self.transform(image)
         label = self.class_to_idx[row["category_name"]]
         return {
@@ -233,6 +247,7 @@ def build_dataloaders(
     batch_size: int,
     num_workers: int,
     img_size: int,
+    train_intervention: TrainImageIntervention,
 ) -> tuple[dict[str, DataLoader], dict[str, int]]:
     class_to_idx = {name: idx for idx, name in enumerate(class_names)}
     train_transform, eval_transform = build_transforms(img_size)
@@ -240,7 +255,14 @@ def build_dataloaders(
 
     for split_name, frame in dataframes.items():
         transform = train_transform if split_name == "train" else eval_transform
-        dataset = CCT20Dataset(frame=frame, images_dir=images_dir, class_to_idx=class_to_idx, transform=transform)
+        image_intervention = train_intervention if split_name == "train" and train_intervention.name != "none" else None
+        dataset = CCT20Dataset(
+            frame=frame,
+            images_dir=images_dir,
+            class_to_idx=class_to_idx,
+            transform=transform,
+            image_intervention=image_intervention,
+        )
         loaders[split_name] = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -442,7 +464,7 @@ def resolve_run_dir(output_root: Path, experiment_name: str) -> Path:
     return run_dir
 
 
-def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
+def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_intervention_override: str | None = None) -> Path:
     set_seed(int(config.get("seed", 42)))
 
     configured_images_dir = Path(config["paths"]["images_dir"])
@@ -464,10 +486,22 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
     verify_image_paths(dataframes, images_dir)
 
     training_cfg = copy.deepcopy(config["training"])
+    if train_intervention_override is not None:
+        training_cfg["train_intervention"] = train_intervention_override
+        config["training"]["train_intervention"] = train_intervention_override
     if smoke:
         training_cfg["epochs"] = 1
         training_cfg["limit_train_batches"] = 2
         training_cfg["limit_eval_batches"] = 2
+
+    train_intervention_name = str(training_cfg.get("train_intervention", "none")).lower()
+    train_intervention = build_train_intervention(
+        name=train_intervention_name,
+        train_frame=dataframes["train"],
+        images_dir=images_dir,
+        dataset_root=configured_images_dir.parent,
+        params=training_cfg.get("train_intervention_params", {}),
+    )
 
     loaders, class_to_idx = build_dataloaders(
         dataframes=dataframes,
@@ -476,6 +510,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
         batch_size=int(training_cfg["batch_size"]),
         num_workers=int(training_cfg["num_workers"]),
         img_size=int(config["model"]["img_size"]),
+        train_intervention=train_intervention,
     )
 
     device = select_device(config.get("system", {}).get("device", "auto"))
@@ -486,6 +521,10 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
     ).to(device)
 
     forward_check = run_forward_check(model, loaders["train"], device)
+    split_interventions = {
+        split_name: getattr(loader.dataset, "intervention_name", "none")
+        for split_name, loader in loaders.items()
+    }
     dataset_summary = {
         "configured_images_dir": str(configured_images_dir),
         "resolved_images_dir": str(images_dir),
@@ -493,6 +532,17 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
         "class_names": class_names,
         "class_to_idx": class_to_idx,
         "split_sizes": {split_name: int(len(frame)) for split_name, frame in dataframes.items()},
+        "train_intervention": train_intervention.summary(),
+        "split_interventions": split_interventions,
+        "sanity_checks": {
+            "train_intervention_only": all(
+                intervention_name == "none"
+                for split_name, intervention_name in split_interventions.items()
+                if split_name != "train"
+            ),
+            "validation_and_test_images_unmodified_by_intervention": True,
+            "test_domain_statistics_used": False,
+        },
         "forward_check": forward_check,
         "config_path": config["_config_path"],
     }
@@ -581,6 +631,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
         "selection_metric": selection_metric,
         "best_score": best_score,
         "class_names": class_names,
+        "train_intervention": train_intervention.summary(),
     }
 
     eval_splits = ["val"] + [spec.name for spec in test_specs]
@@ -612,4 +663,9 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool) -> Path:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    train(config=config, smoke=args.smoke, validate_only=args.validate_only)
+    train(
+        config=config,
+        smoke=args.smoke,
+        validate_only=args.validate_only,
+        train_intervention_override=args.train_intervention,
+    )

@@ -1,51 +1,32 @@
-experiment_name: day_to_night_resnet50_histmatch
+experiment_name: cross_location_resnet101_bbox_blur
 seed: 42
-
 paths:
   images_dir: ${DATA_ROOT}/images
   output_root: ${OUTPUT_ROOT}
-
 datasets:
   train:
     csv: ${DATA_ROOT}/processed/cct20_train.csv
     filters:
-      day_night: day
+      day_night: null
   val:
     csv: ${DATA_ROOT}/processed/cct20_val.csv
     filters:
-      day_night: day
+      day_night: null
   tests:
-    val_night:
-      csv: ${DATA_ROOT}/processed/cct20_val.csv
-      filters:
-        day_night: night
-    cis_night:
+    cis:
       csv: ${DATA_ROOT}/processed/cct20_cis.csv
       filters:
-        day_night: night
-    trans_night:
+        day_night: null
+    trans:
       csv: ${DATA_ROOT}/processed/cct20_trans.csv
       filters:
-        day_night: night
-
+        day_night: null
 label_space:
-  class_names:
-    - bird
-    - bobcat
-    - cat
-    - coyote
-    - dog
-    - opossum
-    - rabbit
-    - raccoon
-    - rodent
-    - skunk
-
+  class_names: null
 model:
-  name: resnet50
+  name: resnet101
   pretrained: true
   img_size: 224
-
 training:
   batch_size: 32
   epochs: 15
@@ -56,6 +37,11 @@ training:
   selection_metric: macro_f1
   limit_train_batches: null
   limit_eval_batches: null
-
+  train_intervention: bbox_blur
+  train_intervention_params:
+    bbox_blur:
+      blur_radius: 8.0
+      box_feather: 3.0
+      bbox_padding_fraction: 0.02
 system:
   device: auto

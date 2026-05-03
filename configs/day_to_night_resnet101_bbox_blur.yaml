@@ -1,4 +1,4 @@
-experiment_name: day_to_night_resnet101
+experiment_name: day_to_night_resnet101_bbox_blur
 seed: 42
 paths:
   images_dir: ${DATA_ROOT}/images
@@ -51,7 +51,11 @@ training:
   selection_metric: macro_f1
   limit_train_batches: null
   limit_eval_batches: null
-  train_intervention: none
-  train_intervention_params: {}
+  train_intervention: bbox_blur
+  train_intervention_params:
+    bbox_blur:
+      blur_radius: 8.0
+      box_feather: 3.0
+      bbox_padding_fraction: 0.02
 system:
   device: auto

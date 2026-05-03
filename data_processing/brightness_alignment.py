@@ -121,22 +121,30 @@ def main() -> None:
     }
 
     brightness_after: dict[str, float] = {}
+    transformed_count = 0
+    non_train_unchanged_count = 0
     for row in master.itertuples(index=False):
         input_path = source_images_dir / row.file_name
         output_path = output_images_dir / row.file_name
 
         with Image.open(input_path) as image:
             image = image.convert("RGB")
-            if row.day_night in lookup_tables:
+            is_train_image = row.file_name in train_files
+            if is_train_image and row.day_night in lookup_tables:
                 transformed = apply_histogram_lookup(image, lookup_tables[row.day_night])
+                transformed_count += 1
             else:
                 transformed = image
+                if not is_train_image:
+                    non_train_unchanged_count += 1
 
             save_image(transformed, output_path)
             brightness_after[row.file_name] = compute_brightness(transformed)
 
     brightness_df = pd.DataFrame(brightness_rows)
     brightness_df["brightness_after"] = brightness_df["file_name"].map(brightness_after)
+    brightness_df["is_train_image"] = brightness_df["file_name"].isin(train_files)
+    brightness_df["was_transformed"] = brightness_df["is_train_image"] & brightness_df["day_night"].isin(lookup_tables)
     brightness_df.to_csv(variant_root / "metadata" / "brightness_statistics.csv", index=False)
 
     histogram_df = pd.DataFrame(
@@ -171,9 +179,14 @@ def main() -> None:
         "num_images_processed": int(len(master)),
         "intervention": {
             "type": "histogram_matching",
+            "transform_scope": "train_only",
+            "evaluation_scope": "validation_and_test_images_left_original",
             "color_space": "HSV_value_channel",
             "target_mode": args.target_mode,
             "target_distribution": "combined_train_day_and_night_histogram",
+            "fit_statistics_source": "training_split_only",
+            "train_transformed_count": transformed_count,
+            "non_train_unchanged_count": non_train_unchanged_count,
             "train_group_statistics": train_group_statistics,
         },
     }

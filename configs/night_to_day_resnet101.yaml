@@ -1,10 +1,8 @@
 experiment_name: night_to_day_resnet101
 seed: 42
-
 paths:
   images_dir: ${DATA_ROOT}/images
   output_root: ${OUTPUT_ROOT}
-
 datasets:
   train:
     csv: ${DATA_ROOT}/processed/cct20_train.csv
@@ -27,25 +25,22 @@ datasets:
       csv: ${DATA_ROOT}/processed/cct20_trans.csv
       filters:
         day_night: day
-
 label_space:
   class_names:
-    - bird
-    - bobcat
-    - cat
-    - coyote
-    - dog
-    - opossum
-    - rabbit
-    - raccoon
-    - rodent
-    - skunk
-
+  - bird
+  - bobcat
+  - cat
+  - coyote
+  - dog
+  - opossum
+  - rabbit
+  - raccoon
+  - rodent
+  - skunk
 model:
   name: resnet101
   pretrained: true
   img_size: 224
-
 training:
   batch_size: 32
   epochs: 15
@@ -56,6 +51,7 @@ training:
   selection_metric: macro_f1
   limit_train_batches: null
   limit_eval_batches: null
-
+  train_intervention: none
+  train_intervention_params: {}
 system:
   device: auto
