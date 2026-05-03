@@ -8,18 +8,19 @@ fi
 
 SCENARIOS=(cross_location day_to_night night_to_day)
 BACKBONES=(resnet18 resnet34 resnet50 resnet101)
-VARIANTS=("" bbox_blur brightness_aligned)
+VARIANTS=(original photometric_randomization background_perturbation combined)
 
 for scenario in "${SCENARIOS[@]}"; do
   for backbone in "${BACKBONES[@]}"; do
     for variant in "${VARIANTS[@]}"; do
-      if [[ -z "$variant" ]]; then
-        config="configs/${scenario}_${backbone}.yaml"
+      config="configs/${scenario}_${backbone}.yaml"
+      if [[ "$variant" == "original" ]]; then
+        train_intervention="none"
       else
-        config="configs/${scenario}_${backbone}_${variant}.yaml"
+        train_intervention="$variant"
       fi
-      echo "Submitting $config"
-      DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" "$config"
+      echo "Submitting $config with train_intervention=$train_intervention"
+      DATA_ROOT="$DATA_ROOT" TRAIN_INTERVENTION="$train_intervention" bash "$PROJECT_ROOT/scripts/submit_train.sh" "$config"
     done
   done
 done

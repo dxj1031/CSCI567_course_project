@@ -197,19 +197,22 @@ This writes:
 
 ## 10. Train-Time Domain Generalization Interventions
 
-To test whether source-domain background reliance or brightness variation affects OOD generalization, use train-time interventions only. The validation and test domains are always read from the original CCT20 images and are never blurred, brightness-aligned, or used to fit transformation statistics.
+The active intervention suite now uses distribution diversification rather than information suppression. The goal is to expose the model to more train-time appearance diversity while preserving object structure. The validation and test domains are always read from the original CCT20 images and are never perturbed, aligned, blurred, or used to fit transformation statistics.
 
 Supported `training.train_intervention` values:
 
 - `none`: original training images
-- `bbox_blur`: for training images only, keep annotation bbox regions unchanged and blur background pixels outside the scaled boxes
-- `brightness_aligned`: for training images only, fit HSV value-channel histogram mappings from the training split and apply those mappings to training images
+- `photometric_randomization`: for training images only, randomly perturb brightness, contrast, gamma, saturation/color balance, and mild RGB noise
+- `background_perturbation`: for training images only, preserve scaled annotation bbox regions and apply light blur/noise/contrast perturbation outside the bbox
+- `combined`: apply `background_perturbation` followed by `photometric_randomization`
+
+Legacy `bbox_blur` and `brightness_aligned` configs remain in the repo for provenance, but `experiments/submit_train_time_interventions.sh` no longer submits them.
 
 The same architecture, optimizer, epochs, seed, splits, and evaluation code are used across variants. The experiment grid covers all combinations of:
 
 - backbones: `resnet18`, `resnet34`, `resnet50`, `resnet101`
 - scenarios: `cross_location`, `day_to_night`, `night_to_day`
-- variants: `original`, `bbox_blur`, `brightness_aligned`
+- variants: `original`, `photometric_randomization`, `background_perturbation`, `combined`
 
 Install the baseline dependencies into the CARC environment if needed:
 
@@ -245,7 +248,7 @@ Every run writes `dataset_summary.json` with `train_intervention`, `split_interv
 
 ## 11. Aggregate And Plot Intervention Results
 
-After the original/bbox/brightness runs finish, aggregate the train-time intervention results:
+After the diversification runs finish, aggregate the train-time intervention results:
 
 ```bash
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
@@ -255,7 +258,7 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 bash experiments/build_train_time_intervention_report.sh
 ```
 
-By default this writes artifacts to a new timestamped directory under `$PROJECT_ROOT/artifacts/`, for example `$PROJECT_ROOT/artifacts/train_time_interventions_20260503_121500`. Set `ARTIFACT_ROOT` only when you intentionally want a specific new output directory.
+By default this writes artifacts to a new timestamped directory under `$PROJECT_ROOT/artifacts/`, for example `$PROJECT_ROOT/artifacts/train_time_diversification_20260503_121500`. Set `ARTIFACT_ROOT` only when you intentionally want a specific new output directory.
 
 - `intervention_runs.csv`
 - `intervention_split_metrics.csv`
@@ -265,6 +268,8 @@ By default this writes artifacts to a new timestamped directory under `$PROJECT_
 - `missing_runs.csv`
 - `RUN_MANIFEST.md`
 - `intervention_comparison.md`
+- `intervention_summary_zh.md`
+- `sanity_checks.json`
 - `intervention_ood_accuracy_by_variant.png`
 - `intervention_normalized_gap_by_variant.png`
 - `intervention_tradeoff_scatter.png`

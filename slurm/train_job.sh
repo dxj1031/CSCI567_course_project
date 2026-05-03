@@ -18,6 +18,9 @@ CMD=("$ENV_PREFIX/bin/python" scripts/train_baseline.py --config "$CONFIG_PATH")
 if [[ "${SMOKE:-0}" == "1" ]]; then
   CMD+=(--smoke)
 fi
+if [[ -n "${TRAIN_INTERVENTION:-}" ]]; then
+  CMD+=(--train-intervention "$TRAIN_INTERVENTION")
+fi
 
 echo "Running on $(hostname)"
 echo "Command: ${CMD[*]}"

@@ -74,6 +74,13 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def seed_worker(worker_id: int) -> None:
+    del worker_id
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 @dataclass
 class SplitSpec:
     name: str
@@ -250,10 +257,13 @@ def build_dataloaders(
     num_workers: int,
     img_size: int,
     train_intervention: TrainImageIntervention,
+    seed: int,
 ) -> tuple[dict[str, DataLoader], dict[str, int]]:
     class_to_idx = {name: idx for idx, name in enumerate(class_names)}
     train_transform, eval_transform = build_transforms(img_size)
     loaders: dict[str, DataLoader] = {}
+    generator = torch.Generator()
+    generator.manual_seed(seed)
 
     for split_name, frame in dataframes.items():
         transform = train_transform if split_name == "train" else eval_transform
@@ -271,6 +281,8 @@ def build_dataloaders(
             shuffle=(split_name == "train"),
             num_workers=num_workers,
             pin_memory=True,
+            worker_init_fn=seed_worker,
+            generator=generator if split_name == "train" else None,
         )
     return loaders, class_to_idx
 
@@ -488,6 +500,19 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
 
     configured_images_dir = Path(config["paths"]["images_dir"])
     output_root = Path(config["paths"]["output_root"])
+    training_cfg = copy.deepcopy(config["training"])
+    if train_intervention_override is not None:
+        training_cfg["train_intervention"] = train_intervention_override
+        config["training"]["train_intervention"] = train_intervention_override
+    if smoke:
+        training_cfg["epochs"] = 1
+        training_cfg["limit_train_batches"] = 2
+        training_cfg["limit_eval_batches"] = 2
+
+    train_intervention_name = str(training_cfg.get("train_intervention", "none")).lower()
+    if train_intervention_name != "none" and not config["experiment_name"].endswith(f"_{train_intervention_name}"):
+        config["experiment_name"] = f"{config['experiment_name']}_{train_intervention_name}"
+
     output_root.mkdir(parents=True, exist_ok=True)
     run_dir = resolve_run_dir(output_root, config["experiment_name"])
     run_timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -506,16 +531,6 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
     images_dir = resolve_images_dir(configured_images_dir, dataframes)
     verify_image_paths(dataframes, images_dir)
 
-    training_cfg = copy.deepcopy(config["training"])
-    if train_intervention_override is not None:
-        training_cfg["train_intervention"] = train_intervention_override
-        config["training"]["train_intervention"] = train_intervention_override
-    if smoke:
-        training_cfg["epochs"] = 1
-        training_cfg["limit_train_batches"] = 2
-        training_cfg["limit_eval_batches"] = 2
-
-    train_intervention_name = str(training_cfg.get("train_intervention", "none")).lower()
     train_intervention = build_train_intervention(
         name=train_intervention_name,
         train_frame=dataframes["train"],
@@ -532,6 +547,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         num_workers=int(training_cfg["num_workers"]),
         img_size=int(config["model"]["img_size"]),
         train_intervention=train_intervention,
+        seed=int(config.get("seed", 42)),
     )
 
     device = select_device(config.get("system", {}).get("device", "auto"))
@@ -587,6 +603,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
                 "val": str(val_spec.csv_path),
                 "tests": {spec.name: str(spec.csv_path) for spec in test_specs},
             },
+            "train_intervention": train_intervention.summary(),
             "training_settings": training_cfg,
             "output_files": {
                 "dataset_summary": str(run_dir / "dataset_summary.json"),
@@ -594,7 +611,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
                 "run_manifest": str(run_dir / "run_manifest.json"),
                 "summary": str(run_dir / "summary.json"),
             },
-            "notes": "Validation and test datasets receive no train-time intervention.",
+            "notes": "Distribution-diversification interventions are stochastic, train-only, and disabled for validation/test.",
         },
     )
 

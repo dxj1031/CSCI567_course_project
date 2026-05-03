@@ -8,7 +8,7 @@ fi
 
 SCENARIOS=(cross_location day_to_night night_to_day)
 BACKBONES=(resnet18 resnet34 resnet50 resnet101)
-VARIANTS=(original bbox_blur brightness_aligned)
+VARIANTS=(original photometric_randomization background_perturbation combined)
 
 cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src"
@@ -19,11 +19,16 @@ for scenario in "${SCENARIOS[@]}"; do
     for variant in "${VARIANTS[@]}"; do
       if [[ "$variant" == "original" ]]; then
         config="configs/${scenario}_${backbone}.yaml"
+        train_intervention="none"
       else
-        config="configs/${scenario}_${backbone}_${variant}.yaml"
+        config="configs/${scenario}_${backbone}.yaml"
+        train_intervention="$variant"
       fi
-      echo "Validating $config"
-      "$ENV_PREFIX/bin/python" scripts/train_baseline.py --config "$config" --validate-only
+      echo "Validating $config with train_intervention=$train_intervention"
+      "$ENV_PREFIX/bin/python" scripts/train_baseline.py \
+        --config "$config" \
+        --train-intervention "$train_intervention" \
+        --validate-only
     done
   done
 done

@@ -6,13 +6,18 @@ if [[ -z "${ACCOUNT:-}" || -z "${PROJECT_ROOT:-}" || -z "${ENV_PREFIX:-}" || -z 
   exit 1
 fi
 
-echo "Submitting ResNet50 train-time intervention runs on original validation/test data..."
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/cross_location_resnet50.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/cross_location_resnet50_bbox_blur.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/cross_location_resnet50_brightness_aligned.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/day_to_night_resnet50.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/day_to_night_resnet50_bbox_blur.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/day_to_night_resnet50_brightness_aligned.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/night_to_day_resnet50.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/night_to_day_resnet50_bbox_blur.yaml
-DATA_ROOT="$DATA_ROOT" bash "$PROJECT_ROOT/scripts/submit_train.sh" configs/night_to_day_resnet50_brightness_aligned.yaml
+echo "Submitting ResNet50 train-time diversification runs on original validation/test data..."
+SCENARIOS=(cross_location day_to_night night_to_day)
+VARIANTS=(original photometric_randomization background_perturbation combined)
+
+for scenario in "${SCENARIOS[@]}"; do
+  for variant in "${VARIANTS[@]}"; do
+    config="configs/${scenario}_resnet50.yaml"
+    if [[ "$variant" == "original" ]]; then
+      train_intervention="none"
+    else
+      train_intervention="$variant"
+    fi
+    DATA_ROOT="$DATA_ROOT" TRAIN_INTERVENTION="$train_intervention" bash "$PROJECT_ROOT/scripts/submit_train.sh" "$config"
+  done
+done

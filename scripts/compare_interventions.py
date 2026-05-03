@@ -20,14 +20,15 @@ from compare_capacity import (
 
 VARIANT_LABELS = {
     "original": "Original",
-    "bbox_blur": "BBox Blur",
-    "brightness_aligned": "Brightness Aligned",
+    "photometric_randomization": "Photometric Randomization",
+    "background_perturbation": "Background Perturbation",
+    "combined": "Combined",
 }
 
 SCENARIO_ORDER = ["cross_location", "day_to_night", "night_to_day"]
 BACKBONE_ORDER = ["resnet18", "resnet34", "resnet50", "resnet101"]
-VARIANT_ORDER = ["original", "bbox_blur", "brightness_aligned"]
-EXPECTED_COLUMNS = ["scenario", "backbone", "variant", "expected_config"]
+VARIANT_ORDER = ["original", "photometric_randomization", "background_perturbation", "combined"]
+EXPECTED_COLUMNS = ["scenario", "backbone", "variant", "expected_config", "expected_train_intervention"]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -52,6 +53,10 @@ def variant_suffix(variant: str) -> str:
     return f"_{variant}"
 
 
+def expected_train_intervention(variant: str) -> str:
+    return "none" if variant == "original" else variant
+
+
 def build_expected_matrix() -> pd.DataFrame:
     rows = []
     for scenario in SCENARIO_ORDER:
@@ -62,7 +67,8 @@ def build_expected_matrix() -> pd.DataFrame:
                         "scenario": scenario,
                         "backbone": backbone,
                         "variant": variant,
-                        "expected_config": f"configs/{scenario}_{backbone}{variant_suffix(variant)}.yaml",
+                        "expected_config": f"configs/{scenario}_{backbone}.yaml",
+                        "expected_train_intervention": expected_train_intervention(variant),
                     }
                 )
     return pd.DataFrame(rows, columns=EXPECTED_COLUMNS)
@@ -78,10 +84,11 @@ def infer_variant(experiment_name: str) -> str | None:
     name = experiment_name.lower()
     if not re.match(r"(cross_location|day_to_night|night_to_day)_resnet(18|34|50|101)", name):
         return None
-    if name.endswith("_bbox_blur") or name.endswith("_bbox_bg"):
-        return "bbox_blur"
-    if name.endswith("_brightness_aligned") or name.endswith("_histmatch"):
-        return "brightness_aligned"
+    for variant in VARIANT_ORDER:
+        if variant == "original":
+            continue
+        if name.endswith(f"_{variant}"):
+            return variant
     if re.search(r"_resnet(18|34|50|101)$", name):
         return "original"
     return None
@@ -89,7 +96,7 @@ def infer_variant(experiment_name: str) -> str | None:
 
 def infer_scenario(experiment_name: str) -> str | None:
     match = re.match(
-        r"(?P<scenario>.+)_resnet(18|34|50|101)(?:_(?:bbox_blur|brightness_aligned|bbox_bg|histmatch))?$",
+        r"(?P<scenario>.+)_resnet(18|34|50|101)(?:_(?:photometric_randomization|background_perturbation|combined))?$",
         experiment_name.lower(),
     )
     if not match:
@@ -171,6 +178,8 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
             manifest.get("timestamp", dataset_summary.get("timestamp", fallback_timestamp(summary_path))),
         )
         notes = build_run_notes(dataset_summary, manifest)
+        sanity_checks = dataset_summary.get("sanity_checks", {})
+        split_interventions = dataset_summary.get("split_interventions", {})
         run_row: dict[str, Any] = {
             "experiment_name": experiment_name,
             "scenario": scenario,
@@ -187,6 +196,12 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
             "best_epoch": summary.get("best_epoch"),
             "selection_metric": summary.get("selection_metric"),
             "best_score": summary.get("best_score"),
+            "split_interventions": json.dumps(split_interventions, sort_keys=True),
+            "train_intervention_only": sanity_checks.get("train_intervention_only"),
+            "validation_and_test_images_unmodified_by_intervention": sanity_checks.get(
+                "validation_and_test_images_unmodified_by_intervention"
+            ),
+            "test_domain_statistics_used": sanity_checks.get("test_domain_statistics_used"),
             "notes": notes,
         }
 
@@ -235,6 +250,10 @@ def build_intervention_rows(summary_paths: list[Path]) -> tuple[pd.DataFrame, pd
         "best_epoch",
         "selection_metric",
         "best_score",
+        "split_interventions",
+        "train_intervention_only",
+        "validation_and_test_images_unmodified_by_intervention",
+        "test_domain_statistics_used",
         "notes",
     ]
     split_columns = [
@@ -445,8 +464,8 @@ def format_float(value: Any) -> str:
 def answer_comparison_questions(metrics_df: pd.DataFrame, effect_df: pd.DataFrame) -> list[str]:
     if metrics_df.empty:
         return [
-            "No completed runs were found, so the comparison questions cannot be answered yet.",
-            "All expected matrix entries are reported in missing_runs.csv for CARC submission or result collection.",
+            "尚未发现已完成的训练结果，因此目前不能回答效果对比问题。",
+            "所有期望组合都已写入 missing_runs.csv，可据此在 CARC 上提交或补收集结果。",
         ]
 
     answers: list[str] = []
@@ -454,24 +473,27 @@ def answer_comparison_questions(metrics_df: pd.DataFrame, effect_df: pd.DataFram
 
     cross_location = non_original[non_original["scenario"] == "cross_location"]
     if cross_location.empty:
-        answers.append("Cross-location: no paired intervention runs were available.")
+        answers.append("cross_location：没有可配对的干预结果。")
     else:
         grouped = cross_location.groupby("variant", observed=True)["delta_ood_acc"].mean().sort_values(ascending=False)
         best_variant = grouped.index[0]
         answers.append(
-            f"Cross-location: {VARIANT_LABELS[str(best_variant)]} helped most on mean OOD accuracy "
-            f"({format_float(grouped.iloc[0])} vs original)."
+            f"cross_location：{VARIANT_LABELS[str(best_variant)]} 对平均 OOD accuracy 帮助最大，"
+            f"相对 original 变化为 {format_float(grouped.iloc[0])}。"
         )
 
     day_to_night = non_original[non_original["scenario"] == "day_to_night"]
     if day_to_night.empty:
-        answers.append("Day-to-night: no paired intervention runs were available.")
+        answers.append("day_to_night：没有可配对的干预结果。")
     else:
-        grouped = day_to_night.groupby("variant", observed=True)["delta_ood_acc"].mean().sort_values()
-        worst_variant = grouped.index[0]
+        grouped = day_to_night.groupby("variant", observed=True)["delta_ood_acc"].mean().sort_values(ascending=False)
+        best_variant = grouped.index[0]
+        worst_variant = grouped.index[-1]
         answers.append(
-            f"Day-to-night: {VARIANT_LABELS[str(worst_variant)]} hurt most on mean OOD accuracy "
-            f"({format_float(grouped.iloc[0])} vs original)."
+            f"day_to_night：{VARIANT_LABELS[str(best_variant)]} 最有帮助 "
+            f"({format_float(grouped.iloc[0])} vs original)，"
+            f"{VARIANT_LABELS[str(worst_variant)]} 最不利 "
+            f"({format_float(grouped.iloc[-1])} vs original)。"
         )
 
     stable = (
@@ -481,30 +503,30 @@ def answer_comparison_questions(metrics_df: pd.DataFrame, effect_df: pd.DataFram
     )
     stable = stable[stable["count"] > 1].sort_values(["std", "mean"], ascending=[True, True])
     if stable.empty:
-        answers.append("Backbone stability: not enough completed runs to estimate stability across scenarios.")
+        answers.append("backbone 稳定性：已完成结果不足，暂时无法估计跨场景稳定性。")
     else:
         row = stable.iloc[0]
         answers.append(
-            f"Backbone stability: {row['backbone']} was most stable by normalized-gap standard deviation "
-            f"(std {format_float(row['std'])}, mean {format_float(row['mean'])})."
+            f"backbone 稳定性：按 normalized gap 的标准差衡量，{row['backbone']} 最稳定 "
+            f"(std {format_float(row['std'])}, mean {format_float(row['mean'])})。"
         )
 
     helpful = non_original[
         (non_original["delta_ood_acc"] > 0) & (non_original["delta_in_domain_acc"] >= -0.02)
     ].copy()
     if helpful.empty:
-        answers.append("Trade-off: no intervention improved OOD accuracy while keeping in-domain loss within 0.020.")
+        answers.append("trade-off：没有干预在提升 OOD accuracy 的同时把 in-domain 损失控制在 0.020 以内。")
     else:
         helpful = helpful.sort_values("delta_ood_acc", ascending=False)
         top = helpful.iloc[0]
         answers.append(
-            "Trade-off: at least one intervention improved OOD accuracy with limited in-domain loss; "
-            f"the strongest was {VARIANT_LABELS[str(top['variant'])]} on {top['scenario']} / {top['backbone']} "
-            f"(delta OOD {format_float(top['delta_ood_acc'])}, delta in-domain {format_float(top['delta_in_domain_acc'])})."
+            "trade-off：至少有一个干预在较小 in-domain 损失下提升了 OOD accuracy；"
+            f"最强的是 {top['scenario']} / {top['backbone']} 上的 {VARIANT_LABELS[str(top['variant'])]} "
+            f"(delta OOD {format_float(top['delta_ood_acc'])}, delta in-domain {format_float(top['delta_in_domain_acc'])})。"
         )
 
     if non_original.empty:
-        answers.append("Normalized gap: no paired intervention rows were available.")
+        answers.append("normalized gap：没有可配对的干预结果。")
     else:
         consistency_rows = []
         for variant, frame in non_original.groupby("variant", observed=True):
@@ -512,7 +534,7 @@ def answer_comparison_questions(metrics_df: pd.DataFrame, effect_df: pd.DataFram
             total = int(frame["delta_normalized_gap"].notna().sum())
             consistency_rows.append(f"{VARIANT_LABELS[str(variant)]}: {improved}/{total}")
         answers.append(
-            "Normalized gap reduction was consistent only if the improved/available count is complete: "
+            "normalized gap 是否稳定下降可看 improved/available 计数："
             + "; ".join(consistency_rows)
             + "."
         )
@@ -530,9 +552,11 @@ def write_markdown(
     completed_count = int((matrix_status_df["status"] == "completed").sum()) if not matrix_status_df.empty else 0
     missing_count = int((matrix_status_df["status"] == "missing").sum()) if not matrix_status_df.empty else 0
     lines = [
-        "# Train-Time Intervention Comparison",
+        "# Train-Time Diversification Comparison",
         "",
-        "This report compares train-only image interventions across backbones and camera-trap scenarios.",
+        "This report compares train-only distribution-diversification interventions across backbones and camera-trap scenarios.",
+        "",
+        "Design rationale: stochastic augmentation increases training-domain appearance diversity instead of forcing all inputs toward one aligned appearance.",
         "",
         "## Matrix Status",
         "",
@@ -559,7 +583,7 @@ def write_markdown(
             ]
         )
 
-    lines.extend(["## Comparison Summary", ""])
+    lines.extend(["## 中文结果摘要", ""])
     for answer in answer_comparison_questions(metrics_df, effect_df):
         lines.append(f"- {answer}")
     lines.append("")
@@ -572,7 +596,7 @@ def write_markdown(
                 "",
                 "Missing combinations are written to `missing_runs.csv`; submit or collect those runs before interpreting the matrix.",
                 "",
-                dataframe_to_markdown(missing_df[EXPECTED_COLUMNS].head(36)),
+                dataframe_to_markdown(missing_df[EXPECTED_COLUMNS].head(48)),
                 "",
             ]
         )
@@ -583,16 +607,18 @@ def write_markdown(
 def write_run_manifest(output_path: Path, output_dir: Path, matrix_status_df: pd.DataFrame) -> None:
     completed_count = int((matrix_status_df["status"] == "completed").sum()) if not matrix_status_df.empty else 0
     lines = [
-        "# Train-Time Intervention Run Manifest",
+        "# Train-Time Diversification Run Manifest",
         "",
         "## Experiment Matrix",
         "",
-        "- Dataset variants: original, bbox_blur, brightness_aligned",
+        "- Dataset variants: original, photometric_randomization, background_perturbation, combined",
         "- Scenarios: cross_location, day_to_night, night_to_day",
         "- Backbones: resnet18, resnet34, resnet50, resnet101",
         "- Seed: read from each run config, default baseline configs use 42",
         "- Optimizer/epochs/batch size/augmentation: held constant by the shared YAML training block unless explicitly changed in a config",
         "- Train-time intervention scope: train split only; validation and test splits must report intervention `none` in `dataset_summary.json`",
+        "- No validation or test-domain statistics are used by the active variants",
+        "- Stochastic augmentations are logged in each run's `dataset_summary.json` and `run_manifest.json`",
         "",
         "## Output Files",
         "",
@@ -601,17 +627,58 @@ def write_run_manifest(output_path: Path, output_dir: Path, matrix_status_df: pd
         "- `intervention_split_metrics.csv`: one row per evaluated split",
         "- `intervention_metrics.csv`: tidy in-domain/OOD/gap table",
         "- `intervention_effect_metrics.csv`: deltas against the original variant",
-        "- `experiment_matrix.csv`: expected 36-combination matrix with completion status",
+        "- `experiment_matrix.csv`: expected 48-combination matrix with completion status",
         "- `missing_runs.csv`: combinations not found in the results root",
         "- `intervention_comparison.md`: concise answers for the report questions",
+        "- `intervention_summary_zh.md`: Chinese summary of the comparison questions",
+        "- `sanity_checks.json`: aggregation-level sanity checks",
         "- Plot PNGs: OOD accuracy, normalized gap, deltas, scatter, backbone lines, and grid views",
         "",
         "## Current Status",
         "",
-        f"- Completed combinations in this aggregation: {completed_count}/36",
+        f"- Completed combinations in this aggregation: {completed_count}/48",
         "",
     ]
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_chinese_summary(output_path: Path, metrics_df: pd.DataFrame, effect_df: pd.DataFrame) -> None:
+    lines = [
+        "# 训练期分布多样化结果摘要",
+        "",
+        "这版实验使用随机增强来扩大训练域外观多样性，而不是把图像强行对齐到单一外观。所有干预都只作用于训练 split，validation/test 保持原始图像与原始评估流程。",
+        "",
+    ]
+    for answer in answer_comparison_questions(metrics_df, effect_df):
+        lines.append(f"- {answer}")
+    lines.append("")
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_sanity_checks(matrix_status_df: pd.DataFrame, runs_df: pd.DataFrame) -> dict[str, Any]:
+    completed_count = int((matrix_status_df["status"] == "completed").sum()) if not matrix_status_df.empty else 0
+    missing_count = int((matrix_status_df["status"] == "missing").sum()) if not matrix_status_df.empty else 0
+    if runs_df.empty:
+        test_data_unchanged: bool | str = "no_completed_runs_to_verify"
+        eval_transforms_disabled: bool | str = "no_completed_runs_to_verify"
+        no_test_domain_stats: bool | str = "no_completed_runs_to_verify"
+    else:
+        test_data_unchanged = bool(
+            runs_df["validation_and_test_images_unmodified_by_intervention"].fillna(False).astype(bool).all()
+        )
+        eval_transforms_disabled = bool(runs_df["train_intervention_only"].fillna(False).astype(bool).all())
+        no_test_domain_stats = bool((~runs_df["test_domain_statistics_used"].fillna(True).astype(bool)).all())
+
+    return {
+        "expected_combination_count": int(len(matrix_status_df)),
+        "completed_combination_count": completed_count,
+        "missing_combination_count": missing_count,
+        "all_expected_combinations_present_in_summary_csv": missing_count == 0,
+        "test_data_unchanged": test_data_unchanged,
+        "train_only_transforms_not_active_in_eval_mode": eval_transforms_disabled,
+        "test_domain_statistics_not_used": no_test_domain_stats,
+        "run_rows_seen": int(len(runs_df)),
+    }
 
 
 def main() -> None:
@@ -636,7 +703,10 @@ def main() -> None:
     matrix_status_df.to_csv(output_dir / "experiment_matrix.csv", index=False)
     missing_runs_df.to_csv(output_dir / "missing_runs.csv", index=False)
     write_markdown(output_dir / "intervention_comparison.md", runs_df, metrics_df, matrix_status_df, effect_df)
+    write_chinese_summary(output_dir / "intervention_summary_zh.md", metrics_df, effect_df)
     write_run_manifest(output_dir / "RUN_MANIFEST.md", output_dir, matrix_status_df)
+    sanity_checks = build_sanity_checks(matrix_status_df, runs_df)
+    (output_dir / "sanity_checks.json").write_text(json.dumps(sanity_checks, indent=2), encoding="utf-8")
 
     payload = {
         "results_root": str(results_root),
@@ -653,7 +723,9 @@ def main() -> None:
         "experiment_matrix_csv": str(output_dir / "experiment_matrix.csv"),
         "missing_runs_csv": str(output_dir / "missing_runs.csv"),
         "markdown_report": str(output_dir / "intervention_comparison.md"),
+        "chinese_summary": str(output_dir / "intervention_summary_zh.md"),
         "run_manifest": str(output_dir / "RUN_MANIFEST.md"),
+        "sanity_checks_json": str(output_dir / "sanity_checks.json"),
     }
     print(json.dumps(payload, indent=2))
 

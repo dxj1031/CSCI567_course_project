@@ -22,11 +22,12 @@ except ModuleNotFoundError:
 
 VARIANT_LABELS = {
     "original": "Original",
-    "bbox_blur": "BBox Blur",
-    "brightness_aligned": "Brightness Aligned",
+    "photometric_randomization": "Photometric Randomization",
+    "background_perturbation": "Background Perturbation",
+    "combined": "Combined",
 }
 SCENARIO_ORDER = ["cross_location", "day_to_night", "night_to_day"]
-VARIANT_ORDER = ["original", "bbox_blur", "brightness_aligned"]
+VARIANT_ORDER = ["original", "photometric_randomization", "background_perturbation", "combined"]
 BACKBONE_ORDER = ["resnet18", "resnet34", "resnet50", "resnet101"]
 
 

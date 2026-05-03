@@ -5,6 +5,12 @@ if [[ -z "${PROJECT_ROOT:-}" || -z "${ENV_PREFIX:-}" || -z "${SOURCE_DATA_ROOT:-
   echo "Set PROJECT_ROOT, ENV_PREFIX, SOURCE_DATA_ROOT, and VARIANT_DATA_ROOT before running."
   exit 1
 fi
+if [[ "${ALLOW_LEGACY_DATASET_VARIANTS:-0}" != "1" ]]; then
+  echo "This legacy script creates processed intervention datasets for the old suppression/alignment protocol."
+  echo "The active diversification protocol uses train-time dataloader interventions and the original DATA_ROOT."
+  echo "Set ALLOW_LEGACY_DATASET_VARIANTS=1 only if you intentionally need the old dataset variants."
+  exit 1
+fi
 
 export PYTHONNOUSERSITE=1
 
