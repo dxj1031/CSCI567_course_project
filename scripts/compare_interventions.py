@@ -20,8 +20,8 @@ from compare_capacity import (
 
 VARIANT_LABELS = {
     "original": "Original",
-    "bbox_bg": "BBox Background",
-    "histmatch": "Histogram Match",
+    "bbox_bg": "BBox Blur",
+    "histmatch": "Brightness Aligned",
 }
 
 VARIANT_ORDER = ["original", "bbox_bg", "histmatch"]

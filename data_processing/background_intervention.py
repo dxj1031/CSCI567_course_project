@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import tarfile
 from pathlib import Path
@@ -30,6 +31,21 @@ ANNOTATION_JSON_NAMES = [
 ]
 
 
+@dataclass(frozen=True)
+class BBoxRecord:
+    bbox_xywh: tuple[float, float, float, float]
+    annotation_width: float | None
+    annotation_height: float | None
+
+
+@dataclass(frozen=True)
+class ScaledBox:
+    xyxy: tuple[int, int, int, int]
+    bbox_xywh: tuple[float, float, float, float]
+    annotation_size: tuple[float | None, float | None]
+    scale_xy: tuple[float, float]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create a bbox-based background-blurred CCT20 dataset variant."
@@ -48,23 +64,56 @@ def parse_args() -> argparse.Namespace:
         "--bbox-padding-fraction",
         type=float,
         default=0.02,
-        help="Expand each annotation box by this fraction of the larger image side before preserving it.",
+        help="Expand each scaled annotation box by this fraction of the larger loaded image side before preserving it.",
     )
     return parser.parse_args()
 
 
-def xywh_to_xyxy(bbox: list[float], width: int, height: int, padding: float) -> tuple[int, int, int, int]:
-    x, y, w, h = bbox
-    pad = padding * float(max(width, height))
-    x0 = max(0, int(np.floor(x - pad)))
-    y0 = max(0, int(np.floor(y - pad)))
-    x1 = min(width, int(np.ceil(x + w + pad)))
-    y1 = min(height, int(np.ceil(y + h + pad)))
+def positive_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def scale_xywh_to_xyxy(
+    record: BBoxRecord,
+    target_width: int,
+    target_height: int,
+    padding: float,
+) -> ScaledBox:
+    x, y, w, h = record.bbox_xywh
+    source_width = record.annotation_width or float(target_width)
+    source_height = record.annotation_height or float(target_height)
+    scale_x = float(target_width) / source_width
+    scale_y = float(target_height) / source_height
+
+    scaled_x0 = x * scale_x
+    scaled_y0 = y * scale_y
+    scaled_x1 = (x + w) * scale_x
+    scaled_y1 = (y + h) * scale_y
+
+    pad = padding * float(max(target_width, target_height))
+    x0 = max(0, int(np.floor(scaled_x0 - pad)))
+    y0 = max(0, int(np.floor(scaled_y0 - pad)))
+    x1 = min(target_width, int(np.ceil(scaled_x1 + pad)))
+    y1 = min(target_height, int(np.ceil(scaled_y1 + pad)))
     if x1 <= x0:
-        x1 = min(width, x0 + 1)
+        x1 = min(target_width, x0 + 1)
     if y1 <= y0:
-        y1 = min(height, y0 + 1)
-    return x0, y0, x1, y1
+        y1 = min(target_height, y0 + 1)
+
+    return ScaledBox(
+        xyxy=(x0, y0, x1, y1),
+        bbox_xywh=record.bbox_xywh,
+        annotation_size=(record.annotation_width, record.annotation_height),
+        scale_xy=(scale_x, scale_y),
+    )
 
 
 def load_annotation_payloads(source_root: Path) -> list[dict[str, Any]]:
@@ -94,48 +143,61 @@ def load_annotation_payloads(source_root: Path) -> list[dict[str, Any]]:
     return payloads
 
 
-def build_bbox_index(source_root: Path) -> dict[str, list[list[float]]]:
+def build_bbox_index(source_root: Path) -> dict[str, list[BBoxRecord]]:
     payloads = load_annotation_payloads(source_root)
-    bbox_index: dict[str, list[list[float]]] = {}
+    bbox_index: dict[str, list[BBoxRecord]] = {}
 
     for payload in payloads:
-        image_id_to_file_names: dict[str, list[str]] = {}
+        image_id_to_metadata: dict[str, dict[str, Any]] = {}
         for image in payload.get("images", []):
             image_id = str(image.get("id", ""))
             file_name = str(image.get("file_name", ""))
-            if image_id and file_name:
-                image_id_to_file_names.setdefault(image_id, []).append(file_name)
+            if image_id:
+                image_id_to_metadata[image_id] = {
+                    "file_name": file_name,
+                    "width": positive_float_or_none(image.get("width")),
+                    "height": positive_float_or_none(image.get("height")),
+                }
 
         for annotation in payload.get("annotations", []):
             image_id = str(annotation.get("image_id", ""))
             bbox = annotation.get("bbox")
             if not image_id or bbox is None:
                 continue
-            bbox_values = [float(value) for value in bbox]
+            if len(bbox) != 4:
+                continue
+            bbox_values = tuple(float(value) for value in bbox)
+            image_metadata = image_id_to_metadata.get(image_id, {})
+            record = BBoxRecord(
+                bbox_xywh=bbox_values,
+                annotation_width=image_metadata.get("width"),
+                annotation_height=image_metadata.get("height"),
+            )
             lookup_keys = {image_id}
-            for file_name in image_id_to_file_names.get(image_id, []):
+            file_name = str(image_metadata.get("file_name") or "")
+            if file_name:
                 lookup_keys.add(Path(file_name).stem)
                 lookup_keys.add(Path(file_name).name)
             for lookup_key in lookup_keys:
-                bbox_index.setdefault(lookup_key, []).append(bbox_values)
+                bbox_index.setdefault(lookup_key, []).append(record)
 
     return bbox_index
 
 
 def build_bbox_mask(
-    bboxes: list[list[float]],
+    bboxes: list[BBoxRecord],
     width: int,
     height: int,
     padding: float,
-) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
+) -> tuple[np.ndarray, list[ScaledBox]]:
     mask = np.zeros((height, width), dtype=bool)
-    boxes_xyxy: list[tuple[int, int, int, int]] = []
+    scaled_boxes: list[ScaledBox] = []
     for bbox in bboxes:
-        box = xywh_to_xyxy(bbox, width, height, padding)
-        x0, y0, x1, y1 = box
+        scaled_box = scale_xywh_to_xyxy(bbox, width, height, padding)
+        x0, y0, x1, y1 = scaled_box.xyxy
         mask[y0:y1, x0:x1] = True
-        boxes_xyxy.append(box)
-    return mask, boxes_xyxy
+        scaled_boxes.append(scaled_box)
+    return mask, scaled_boxes
 
 
 def apply_background_suppression(
@@ -149,6 +211,7 @@ def apply_background_suppression(
     mask_image = Image.fromarray((foreground_mask.astype(np.uint8) * 255), mode="L")
     if box_feather > 0:
         mask_image = mask_image.filter(ImageFilter.GaussianBlur(radius=box_feather))
+    # White mask pixels select the original image; black pixels select the blurred background.
     return Image.composite(image, blurred, mask_image)
 
 
@@ -189,7 +252,7 @@ def main() -> None:
 
             bboxes = bbox_index.get(image_id, [])
             if bboxes:
-                foreground_mask, boxes_xyxy = build_bbox_mask(
+                foreground_mask, scaled_boxes = build_bbox_mask(
                     bboxes=bboxes,
                     width=width,
                     height=height,
@@ -199,7 +262,7 @@ def main() -> None:
                 annotation_bbox_count += 1
             else:
                 foreground_mask = np.ones((height, width), dtype=bool)
-                boxes_xyxy = []
+                scaled_boxes = []
                 selection_source = "missing_annotation_bbox_image_unchanged"
                 missing_bbox_count += 1
 
@@ -218,7 +281,10 @@ def main() -> None:
                 "day_night": getattr(row, "day_night", None),
                 "selection_source": selection_source,
                 "foreground_area_fraction": float(foreground_mask.mean()),
-                "boxes_xyxy": json.dumps(boxes_xyxy),
+                "boxes_xyxy": json.dumps([box.xyxy for box in scaled_boxes]),
+                "annotation_boxes_xywh": json.dumps([box.bbox_xywh for box in scaled_boxes]),
+                "annotation_image_sizes": json.dumps([box.annotation_size for box in scaled_boxes]),
+                "bbox_scale_factors": json.dumps([box.scale_xy for box in scaled_boxes]),
                 "num_annotation_boxes": len(bboxes),
             }
         )
@@ -234,7 +300,11 @@ def main() -> None:
         "num_images_processed": int(len(master)),
         "intervention": {
             "type": "bbox_background_blur",
-            "selection_strategy": "preserve_annotation_bboxes_blur_outside_boxes",
+            "selection_strategy": "scale_annotation_bboxes_preserve_inside_blur_outside",
+            "coordinate_transform": (
+                "bbox xywh is scaled from annotation image size to the loaded image size; "
+                "the original loaded pixels inside scaled boxes are preserved and pixels outside are blurred"
+            ),
             "blur_radius": args.blur_radius,
             "box_feather": args.box_feather,
             "bbox_padding_fraction": args.bbox_padding_fraction,
