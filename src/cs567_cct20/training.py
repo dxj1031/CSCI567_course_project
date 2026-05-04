@@ -25,6 +25,12 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms as T
 
 from .interventions import TRAIN_INTERVENTIONS, TrainImageIntervention, build_train_intervention
+from .visibility import (
+    VISIBILITY_MODES,
+    VISIBILITY_SCOPES,
+    VisibilityPreprocessor,
+    build_visibility_settings,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +48,50 @@ def parse_args() -> argparse.Namespace:
         "--validate-only",
         action="store_true",
         help="Build datasets and run a single forward pass without training.",
+    )
+    parser.add_argument(
+        "--visibility-mode",
+        choices=sorted(VISIBILITY_MODES),
+        default=None,
+        help="Visibility preprocessing mode. Overrides visibility.mode in the YAML config.",
+    )
+    parser.add_argument(
+        "--visibility-scope",
+        choices=sorted(VISIBILITY_SCOPES),
+        default=None,
+        help="Visibility preprocessing scope. Overrides visibility.scope in the YAML config.",
+    )
+    parser.add_argument(
+        "--night-only-flag-source",
+        default=None,
+        help="Metadata field or rule used to identify night/low-light rows, e.g. day_night or day_night=night.",
+    )
+    parser.add_argument(
+        "--visibility-gamma",
+        type=float,
+        default=None,
+        help="Gamma value for gamma and gamma+CLAHE visibility modes.",
+    )
+    parser.add_argument(
+        "--visibility-clahe-clip-limit",
+        type=float,
+        default=None,
+        help="CLAHE clip limit for CLAHE visibility modes.",
+    )
+    parser.add_argument(
+        "--visibility-clahe-tile-grid-size",
+        default=None,
+        help="CLAHE tile grid size, e.g. 8,8 or 8x8.",
+    )
+    parser.add_argument(
+        "--eval-only-checkpoint",
+        default=None,
+        help="Evaluate a fixed checkpoint without retraining.",
+    )
+    parser.add_argument(
+        "--checkpoint-results-root",
+        default=None,
+        help="When --eval-only-checkpoint is omitted, discover the latest matching baseline checkpoint here.",
     )
     return parser.parse_args()
 
@@ -95,14 +145,19 @@ class CCT20Dataset(Dataset):
         images_dir: Path,
         class_to_idx: dict[str, int],
         transform: T.Compose,
+        split_name: str,
         image_intervention: TrainImageIntervention | None = None,
+        visibility_preprocessor: VisibilityPreprocessor | None = None,
     ) -> None:
         self.frame = frame.reset_index(drop=True).copy()
         self.images_dir = images_dir
         self.class_to_idx = class_to_idx
         self.transform = transform
+        self.split_name = split_name
         self.image_intervention = image_intervention
+        self.visibility_preprocessor = visibility_preprocessor
         self.intervention_name = image_intervention.name if image_intervention is not None else "none"
+        self.visibility_name = visibility_preprocessor.name if visibility_preprocessor is not None else "none"
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -111,6 +166,8 @@ class CCT20Dataset(Dataset):
         row = self.frame.iloc[index]
         image_path = self.images_dir / row["file_name"]
         image = Image.open(image_path).convert("RGB")
+        if self.visibility_preprocessor is not None:
+            image = self.visibility_preprocessor(image, row, self.split_name)
         if self.image_intervention is not None:
             image = self.image_intervention(image, row)
         image = self.transform(image)
@@ -257,6 +314,7 @@ def build_dataloaders(
     num_workers: int,
     img_size: int,
     train_intervention: TrainImageIntervention,
+    visibility_preprocessor: VisibilityPreprocessor | None,
     seed: int,
 ) -> tuple[dict[str, DataLoader], dict[str, int]]:
     class_to_idx = {name: idx for idx, name in enumerate(class_names)}
@@ -273,7 +331,9 @@ def build_dataloaders(
             images_dir=images_dir,
             class_to_idx=class_to_idx,
             transform=transform,
+            split_name=split_name,
             image_intervention=image_intervention,
+            visibility_preprocessor=visibility_preprocessor,
         )
         loaders[split_name] = DataLoader(
             dataset,
@@ -431,6 +491,11 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2)
 
 
+def load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def save_history(history: list[dict[str, Any]], path: Path) -> None:
     pd.DataFrame(history).to_csv(path, index=False)
 
@@ -495,9 +560,144 @@ def infer_experiment_fields(experiment_name: str, train_intervention_name: str) 
     }
 
 
-def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_intervention_override: str | None = None) -> Path:
+def build_visibility_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    cli_pairs = {
+        "mode": args.visibility_mode,
+        "scope": args.visibility_scope,
+        "night_only_flag_source": args.night_only_flag_source,
+        "gamma": args.visibility_gamma,
+        "clahe_clip_limit": args.visibility_clahe_clip_limit,
+        "clahe_tile_grid_size": args.visibility_clahe_tile_grid_size,
+    }
+    overrides = {key: value for key, value in cli_pairs.items() if value is not None}
+    if overrides:
+        overrides["experiment_requested"] = True
+    return overrides
+
+
+def append_visibility_suffix(experiment_name: str, visibility_summary: dict[str, Any], requested: bool) -> str:
+    if not requested:
+        return experiment_name
+    suffix = f"_visibility_{visibility_summary['scope']}_{visibility_summary['mode']}"
+    if experiment_name.endswith(suffix):
+        return experiment_name
+    return f"{experiment_name}{suffix}"
+
+
+def build_visibility_sanity_checks(visibility_summary: dict[str, Any]) -> dict[str, bool]:
+    counts = visibility_summary.get("application_counts", {})
+    enabled = bool(visibility_summary.get("enabled"))
+    scope = str(visibility_summary.get("scope"))
+
+    all_counts = list(counts.values())
+    train_count = counts.get("train", {})
+    no_images_enhanced = all(int(split_count.get("enhanced_rows", 0)) == 0 for split_count in all_counts)
+    enhanced_subset_of_night = all(
+        int(split_count.get("enhanced_rows", 0)) <= int(split_count.get("night_rows", 0))
+        for split_count in all_counts
+    )
+    test_only_all_eval_night_rows_enhanced = all(
+        int(split_count.get("enhanced_rows", 0))
+        == (0 if split_name == "train" else int(split_count.get("night_rows", 0)))
+        for split_name, split_count in counts.items()
+    )
+    night_only_all_night_rows_enhanced = all(
+        int(split_count.get("enhanced_rows", 0)) == int(split_count.get("night_rows", 0))
+        for split_count in all_counts
+    )
+    all_rows_enhanced = all(
+        int(split_count.get("enhanced_rows", 0)) == int(split_count.get("rows", 0))
+        for split_count in all_counts
+    )
+
+    return {
+        "visibility_original_mode_no_images_modified": (not enabled and no_images_enhanced) or enabled,
+        "visibility_test_only_training_images_unmodified": (
+            scope != "test_only" or int(train_count.get("enhanced_rows", 0)) == 0
+        ),
+        "visibility_test_only_low_light_eval_only": (
+            scope != "test_only"
+            or (
+                int(train_count.get("enhanced_rows", 0)) == 0
+                and enhanced_subset_of_night
+                and ((not enabled) or test_only_all_eval_night_rows_enhanced)
+            )
+        ),
+        "visibility_train_test_consistent_all_splits_same_policy": (
+            scope != "train_test_consistent" or (not enabled) or all_rows_enhanced
+        ),
+        "visibility_night_only_only_low_light_rows": (
+            scope != "night_only"
+            or (
+                enhanced_subset_of_night
+                and ((not enabled) or night_only_all_night_rows_enhanced)
+            )
+        ),
+    }
+
+
+def resolve_eval_checkpoint(
+    explicit_checkpoint: str | None,
+    checkpoint_results_root: str | None,
+    baseline_experiment_name: str,
+) -> Path | None:
+    if explicit_checkpoint:
+        return Path(os.path.expandvars(os.path.expanduser(explicit_checkpoint))).resolve()
+    if not checkpoint_results_root:
+        return None
+
+    results_root = Path(os.path.expandvars(os.path.expanduser(checkpoint_results_root))).resolve()
+    candidates: list[tuple[float, str, Path]] = []
+    for summary_path in results_root.rglob("summary.json"):
+        try:
+            summary = load_json(summary_path)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if summary.get("experiment_name") != baseline_experiment_name:
+            continue
+
+        checkpoint_value = summary.get("checkpoint")
+        checkpoint_path = Path(checkpoint_value) if checkpoint_value else summary_path.parent / "best.pt"
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = summary_path.parent / checkpoint_path
+        if not checkpoint_path.exists():
+            fallback_path = summary_path.parent / "best.pt"
+            if fallback_path.exists():
+                checkpoint_path = fallback_path
+        if checkpoint_path.exists():
+            candidates.append((summary_path.stat().st_mtime, summary_path.parent.name, checkpoint_path))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"Could not find a checkpoint for experiment_name={baseline_experiment_name!r} under {results_root}."
+        )
+
+    return sorted(candidates, key=lambda item: (item[0], item[1]))[-1][2]
+
+
+def load_checkpoint(path: Path, device: torch.device) -> dict[str, Any]:
+    try:
+        payload = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        payload = torch.load(path, map_location=device)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected checkpoint {path} to contain a dict payload.")
+    return payload
+
+
+def train(
+    config: dict[str, Any],
+    smoke: bool,
+    validate_only: bool,
+    train_intervention_override: str | None = None,
+    visibility_overrides: dict[str, Any] | None = None,
+    eval_only_checkpoint: str | None = None,
+    checkpoint_results_root: str | None = None,
+) -> Path:
     set_seed(int(config.get("seed", 42)))
 
+    baseline_experiment_name = str(config["experiment_name"])
+    has_visibility_config = "visibility" in config
     configured_images_dir = Path(config["paths"]["images_dir"])
     output_root = Path(config["paths"]["output_root"])
     training_cfg = copy.deepcopy(config["training"])
@@ -512,6 +712,27 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
     train_intervention_name = str(training_cfg.get("train_intervention", "none")).lower()
     if train_intervention_name != "none" and not config["experiment_name"].endswith(f"_{train_intervention_name}"):
         config["experiment_name"] = f"{config['experiment_name']}_{train_intervention_name}"
+
+    visibility_settings = build_visibility_settings(config, visibility_overrides)
+    visibility_requested = bool(visibility_settings.experiment_requested or has_visibility_config)
+    visibility_summary_for_config = visibility_settings.to_dict()
+    config["visibility"] = visibility_summary_for_config
+    config["experiment_name"] = append_visibility_suffix(
+        str(config["experiment_name"]),
+        visibility_summary_for_config,
+        requested=visibility_requested,
+    )
+
+    eval_only_requested = bool(eval_only_checkpoint or checkpoint_results_root)
+    if eval_only_requested and train_intervention_name != "none":
+        raise ValueError("Evaluation-only visibility runs must keep training.train_intervention set to none.")
+    checkpoint_path_for_eval = None
+    if eval_only_requested and not validate_only:
+        checkpoint_path_for_eval = resolve_eval_checkpoint(
+            explicit_checkpoint=eval_only_checkpoint,
+            checkpoint_results_root=checkpoint_results_root,
+            baseline_experiment_name=baseline_experiment_name,
+        )
 
     output_root.mkdir(parents=True, exist_ok=True)
     run_dir = resolve_run_dir(output_root, config["experiment_name"])
@@ -538,6 +759,11 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         dataset_root=configured_images_dir.parent,
         params=training_cfg.get("train_intervention_params", {}),
     )
+    visibility_preprocessor = VisibilityPreprocessor(visibility_settings)
+    visibility_summary = visibility_preprocessor.summary(dataframes)
+    dataset_visibility_preprocessor = (
+        visibility_preprocessor if visibility_requested or visibility_settings.enabled else None
+    )
 
     loaders, class_to_idx = build_dataloaders(
         dataframes=dataframes,
@@ -547,6 +773,7 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         num_workers=int(training_cfg["num_workers"]),
         img_size=int(config["model"]["img_size"]),
         train_intervention=train_intervention,
+        visibility_preprocessor=dataset_visibility_preprocessor,
         seed=int(config.get("seed", 42)),
     )
 
@@ -562,6 +789,20 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         split_name: getattr(loader.dataset, "intervention_name", "none")
         for split_name, loader in loaders.items()
     }
+    split_visibility_preprocessing = {
+        split_name: getattr(loader.dataset, "visibility_name", "none")
+        for split_name, loader in loaders.items()
+    }
+    sanity_checks = {
+        "train_intervention_only": all(
+            intervention_name == "none"
+            for split_name, intervention_name in split_interventions.items()
+            if split_name != "train"
+        ),
+        "validation_and_test_images_unmodified_by_intervention": True,
+        "test_domain_statistics_used": False,
+        **build_visibility_sanity_checks(visibility_summary),
+    }
     dataset_summary = {
         "run_id": run_id,
         "timestamp": run_timestamp,
@@ -573,15 +814,11 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         "split_sizes": {split_name: int(len(frame)) for split_name, frame in dataframes.items()},
         "train_intervention": train_intervention.summary(),
         "split_interventions": split_interventions,
-        "sanity_checks": {
-            "train_intervention_only": all(
-                intervention_name == "none"
-                for split_name, intervention_name in split_interventions.items()
-                if split_name != "train"
-            ),
-            "validation_and_test_images_unmodified_by_intervention": True,
-            "test_domain_statistics_used": False,
-        },
+        "visibility_preprocessing": visibility_summary,
+        "split_visibility_preprocessing": split_visibility_preprocessing,
+        "eval_only": eval_only_requested,
+        "source_checkpoint": str(checkpoint_path_for_eval) if checkpoint_path_for_eval is not None else None,
+        "sanity_checks": sanity_checks,
         "forward_check": forward_check,
         "config_path": config["_config_path"],
     }
@@ -604,14 +841,20 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
                 "tests": {spec.name: str(spec.csv_path) for spec in test_specs},
             },
             "train_intervention": train_intervention.summary(),
+            "visibility_preprocessing": visibility_summary,
             "training_settings": training_cfg,
+            "eval_only": eval_only_requested,
+            "source_checkpoint": str(checkpoint_path_for_eval) if checkpoint_path_for_eval is not None else None,
             "output_files": {
                 "dataset_summary": str(run_dir / "dataset_summary.json"),
                 "resolved_config": str(run_dir / "resolved_config.json"),
                 "run_manifest": str(run_dir / "run_manifest.json"),
                 "summary": str(run_dir / "summary.json"),
             },
-            "notes": "Distribution-diversification interventions are stochastic, train-only, and disabled for validation/test.",
+            "notes": (
+                "Visibility hypothesis run. If eval_only is true, the checkpoint is fixed and no retraining is done; "
+                "otherwise the logged visibility preprocessing is part of the training and evaluation data pipeline."
+            ),
         },
     )
 
@@ -621,6 +864,61 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
 
     class_weights = compute_class_weights(dataframes["train"], class_names, device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    eval_splits = ["val"] + [spec.name for spec in test_specs]
+    if eval_only_requested:
+        if checkpoint_path_for_eval is None:
+            raise ValueError("Evaluation-only mode requires --eval-only-checkpoint or --checkpoint-results-root.")
+        checkpoint_payload = load_checkpoint(checkpoint_path_for_eval, device)
+        checkpoint_class_names = checkpoint_payload.get("class_names")
+        if checkpoint_class_names is not None and list(checkpoint_class_names) != class_names:
+            raise ValueError(
+                "Checkpoint class_names do not match the active config label_space: "
+                f"{checkpoint_class_names!r} != {class_names!r}"
+            )
+        state_dict = checkpoint_payload.get("model_state_dict", checkpoint_payload)
+        model.load_state_dict(state_dict)
+
+        summary: dict[str, Any] = {
+            "experiment_name": config["experiment_name"],
+            "run_id": run_id,
+            "timestamp": run_timestamp,
+            "seed": int(config.get("seed", 42)),
+            "checkpoint": str(checkpoint_path_for_eval),
+            "source_experiment_name": baseline_experiment_name,
+            "eval_only": True,
+            "best_epoch": checkpoint_payload.get("epoch"),
+            "selection_metric": training_cfg.get("selection_metric", "macro_f1"),
+            "best_score": checkpoint_payload.get("score"),
+            "class_names": class_names,
+            "train_intervention": train_intervention.summary(),
+            "visibility_preprocessing": visibility_summary,
+        }
+
+        for split_name in eval_splits:
+            metrics = evaluate(
+                model=model,
+                loader=loaders[split_name],
+                criterion=criterion,
+                device=device,
+                class_names=class_names,
+                limit_batches=training_cfg.get("limit_eval_batches"),
+            )
+            reduced_metrics = {
+                "loss": metrics["loss"],
+                "accuracy": metrics["accuracy"],
+                "macro_f1": metrics["macro_f1"],
+                "per_class_f1": metrics["per_class_f1"],
+            }
+            save_json(run_dir / f"metrics_{split_name}.json", reduced_metrics)
+            save_predictions(split_name, metrics, class_names, run_dir / f"predictions_{split_name}.csv")
+            save_confusion_outputs(split_name, metrics, class_names, run_dir)
+            summary[split_name] = reduced_metrics
+
+        save_json(run_dir / "summary.json", summary)
+        print(json.dumps(summary, indent=2))
+        return run_dir
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(training_cfg["learning_rate"]),
@@ -701,9 +999,10 @@ def train(config: dict[str, Any], smoke: bool, validate_only: bool, train_interv
         "best_score": best_score,
         "class_names": class_names,
         "train_intervention": train_intervention.summary(),
+        "visibility_preprocessing": visibility_summary,
+        "eval_only": False,
     }
 
-    eval_splits = ["val"] + [spec.name for spec in test_specs]
     for split_name in eval_splits:
         metrics = evaluate(
             model=model,
@@ -737,4 +1036,7 @@ def main() -> None:
         smoke=args.smoke,
         validate_only=args.validate_only,
         train_intervention_override=args.train_intervention,
+        visibility_overrides=build_visibility_overrides(args),
+        eval_only_checkpoint=args.eval_only_checkpoint,
+        checkpoint_results_root=args.checkpoint_results_root,
     )

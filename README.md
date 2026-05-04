@@ -287,7 +287,86 @@ The scatter plot uses:
 - Color: train-time intervention variant
 - Marker/size: scenario and backbone
 
-## 12. Notes
+## 12. Visibility Hypothesis Experiments
+
+The visibility suite tests whether low-light or low-visibility inputs explain the remaining generalization failures better than background or brightness mismatch alone.
+
+Supported visibility flags on `scripts/train_baseline.py`:
+
+- `--visibility-mode {original,gamma,clahe,gamma_clahe}`
+- `--visibility-scope {test_only,train_test_consistent,night_only}`
+- `--night-only-flag-source <metadata_field_or_rule>`; default: `day_night`
+- `--visibility-gamma <float>`; default: `0.7`
+- `--visibility-clahe-clip-limit <float>`; default: `2.0`
+- `--visibility-clahe-tile-grid-size <WxH>`; default: `8,8`
+- `--eval-only-checkpoint <path>` or `--checkpoint-results-root <dir>` for fixed-checkpoint test-time enhancement
+
+Experiment scope semantics:
+
+- `test_only`: load a fixed baseline checkpoint and enhance only evaluation rows identified as night or low-light. Training is not rerun.
+- `train_test_consistent`: retrain from scratch and apply the selected visibility mode to train, validation, and test images.
+- `night_only`: retrain from scratch and apply the selected visibility mode only to night or low-light rows across train, validation, and test.
+
+Submit the three requested experiment groups on CARC:
+
+```bash
+export ACCOUNT=vsharan_1861
+export PROJECT_ROOT=/home1/xdeng713/CSCI567_course_project
+export ENV_PREFIX=/home1/xdeng713/envs/cs567-baseline
+export DATA_ROOT=/scratch1/$USER/datasets/CCT20
+export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
+export PYTHONPATH="$PROJECT_ROOT/src"
+export PYTHONNOUSERSITE=1
+
+# Experiment 1: fixed-checkpoint test-time enhancement only.
+# BASELINE_RESULTS_ROOT should contain the original baseline checkpoint run dirs.
+export BASELINE_RESULTS_ROOT="$OUTPUT_ROOT"
+bash "$PROJECT_ROOT/experiments/submit_visibility_test_only.sh"
+
+# Experiment 2: retrain with consistent train/eval enhancement.
+bash "$PROJECT_ROOT/experiments/submit_visibility_train_test_consistent.sh"
+
+# Experiment 3: retrain with night-only enhancement.
+bash "$PROJECT_ROOT/experiments/submit_visibility_night_only.sh"
+```
+
+To submit all three groups in one shell:
+
+```bash
+bash "$PROJECT_ROOT/experiments/submit_visibility_experiments.sh"
+```
+
+Before long submissions, run validate-only checks in an interactive allocation:
+
+```bash
+export OUTPUT_ROOT=/scratch1/$USER/cs567_visibility_validate_only
+bash "$PROJECT_ROOT/experiments/validate_visibility_matrix.sh"
+```
+
+After the runs finish, aggregate and plot the results:
+
+```bash
+export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
+bash "$PROJECT_ROOT/experiments/build_visibility_report.sh"
+```
+
+The report writes a new artifact directory under `$PROJECT_ROOT/artifacts/visibility_hypothesis_<timestamp>` containing:
+
+- `visibility_summary.csv`: tidy in-domain/OOD/gap/normalized-gap table
+- `visibility_runs.csv`
+- `visibility_split_metrics.csv`
+- `visibility_effect_metrics.csv`
+- `visibility_split_effect_metrics.csv`
+- `experiment_matrix.csv`
+- `missing_runs.csv`
+- `visibility_summary_zh.md`
+- `RUN_MANIFEST.md`
+- `sanity_checks.json`
+- plots for OOD accuracy, normalized gap, deltas, trade-off scatter, scenario-specific summaries, and best-mode heatmap
+
+Do not interpret improvements unless they appear in `visibility_summary.csv` and the paired delta files. Scenario-dependent or backbone-dependent effects should be reported as such.
+
+## 13. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.

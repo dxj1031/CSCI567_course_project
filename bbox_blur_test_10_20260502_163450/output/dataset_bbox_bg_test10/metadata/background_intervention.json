@@ -1,0 +1,17 @@
+{
+  "variant_name": "dataset_bbox_bg_test10",
+  "source_root": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\source",
+  "resolved_source_images_dir": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\source\\images",
+  "variant_root": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\output\\dataset_bbox_bg_test10",
+  "num_images_processed": 10,
+  "intervention": {
+    "type": "bbox_background_blur",
+    "selection_strategy": "scale_annotation_bboxes_preserve_inside_blur_outside",
+    "coordinate_transform": "bbox xywh is scaled from annotation image size to the loaded image size; the original loaded pixels inside scaled boxes are preserved and pixels outside are blurred",
+    "blur_radius": 8.0,
+    "box_feather": 3.0,
+    "bbox_padding_fraction": 0.02,
+    "annotation_bbox_count": 10,
+    "missing_bbox_count": 0
+  }
+}
