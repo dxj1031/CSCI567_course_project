@@ -21,9 +21,10 @@ import yaml
 from PIL import Image
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import models, transforms as T
 
+from .image_ablation import IMAGE_ABLATIONS, ImageAblation, build_image_ablation
 from .interventions import TRAIN_INTERVENTIONS, TrainImageIntervention, build_train_intervention
 from .visibility import (
     VISIBILITY_MODES,
@@ -31,6 +32,11 @@ from .visibility import (
     VisibilityPreprocessor,
     build_visibility_settings,
 )
+
+
+LOSS_FUNCTIONS = {"cross_entropy", "focal"}
+CLASS_WEIGHT_MODES = {"none", "balanced", "sqrt_inv_frequency"}
+TRAIN_SAMPLERS = {"none", "class_balanced"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,6 +99,54 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="When --eval-only-checkpoint is omitted, discover the latest matching baseline checkpoint here.",
     )
+    parser.add_argument("--seed", type=int, default=None, help="Override the config seed.")
+    parser.add_argument(
+        "--loss",
+        choices=sorted(LOSS_FUNCTIONS),
+        default=None,
+        help="Override training.loss. Use focal for rare-class follow-up experiments.",
+    )
+    parser.add_argument(
+        "--class-weight-mode",
+        choices=sorted(CLASS_WEIGHT_MODES),
+        default=None,
+        help="Override training.class_weight_mode.",
+    )
+    parser.add_argument(
+        "--train-sampler",
+        choices=sorted(TRAIN_SAMPLERS),
+        default=None,
+        help="Override training.train_sampler.",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=None,
+        help="Override training.focal_gamma when --loss focal is used.",
+    )
+    parser.add_argument(
+        "--image-ablation",
+        choices=sorted(IMAGE_ABLATIONS),
+        default=None,
+        help="Consistent bbox-based image view applied to train/validation/test.",
+    )
+    parser.add_argument(
+        "--image-ablation-bbox-padding-fraction",
+        type=float,
+        default=None,
+        help="Padding fraction around annotation boxes for image ablations.",
+    )
+    parser.add_argument(
+        "--image-ablation-mask-feather",
+        type=float,
+        default=None,
+        help="Mask feather radius for foreground/background-only ablations.",
+    )
+    parser.add_argument(
+        "--image-ablation-fill-color",
+        default=None,
+        help="RGB fill color for masked regions, e.g. 127,127,127.",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +202,7 @@ class CCT20Dataset(Dataset):
         split_name: str,
         image_intervention: TrainImageIntervention | None = None,
         visibility_preprocessor: VisibilityPreprocessor | None = None,
+        image_ablation: ImageAblation | None = None,
     ) -> None:
         self.frame = frame.reset_index(drop=True).copy()
         self.images_dir = images_dir
@@ -156,8 +211,10 @@ class CCT20Dataset(Dataset):
         self.split_name = split_name
         self.image_intervention = image_intervention
         self.visibility_preprocessor = visibility_preprocessor
+        self.image_ablation = image_ablation
         self.intervention_name = image_intervention.name if image_intervention is not None else "none"
         self.visibility_name = visibility_preprocessor.name if visibility_preprocessor is not None else "none"
+        self.image_ablation_name = image_ablation.name if image_ablation is not None else "none"
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -170,6 +227,8 @@ class CCT20Dataset(Dataset):
             image = self.visibility_preprocessor(image, row, self.split_name)
         if self.image_intervention is not None:
             image = self.image_intervention(image, row)
+        if self.image_ablation is not None:
+            image = self.image_ablation(image, row)
         image = self.transform(image)
         label = self.class_to_idx[row["category_name"]]
         return {
@@ -315,6 +374,8 @@ def build_dataloaders(
     img_size: int,
     train_intervention: TrainImageIntervention,
     visibility_preprocessor: VisibilityPreprocessor | None,
+    image_ablation: ImageAblation,
+    train_sampler_name: str,
     seed: int,
 ) -> tuple[dict[str, DataLoader], dict[str, int]]:
     class_to_idx = {name: idx for idx, name in enumerate(class_names)}
@@ -322,10 +383,24 @@ def build_dataloaders(
     loaders: dict[str, DataLoader] = {}
     generator = torch.Generator()
     generator.manual_seed(seed)
+    sampler_generator = torch.Generator()
+    sampler_generator.manual_seed(seed)
 
     for split_name, frame in dataframes.items():
         transform = train_transform if split_name == "train" else eval_transform
         image_intervention = train_intervention if split_name == "train" and train_intervention.name != "none" else None
+        split_image_ablation = image_ablation if image_ablation.name != "none" else None
+        sampler = None
+        shuffle = split_name == "train"
+        if split_name == "train" and train_sampler_name == "class_balanced":
+            sample_weights = compute_sample_weights(frame, class_names)
+            sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True,
+                generator=sampler_generator,
+            )
+            shuffle = False
         dataset = CCT20Dataset(
             frame=frame,
             images_dir=images_dir,
@@ -334,11 +409,13 @@ def build_dataloaders(
             split_name=split_name,
             image_intervention=image_intervention,
             visibility_preprocessor=visibility_preprocessor,
+            image_ablation=split_image_ablation,
         )
         loaders[split_name] = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=(split_name == "train"),
+            shuffle=shuffle,
+            sampler=sampler,
             num_workers=num_workers,
             pin_memory=True,
             worker_init_fn=seed_worker,
@@ -375,15 +452,94 @@ def select_device(device_name: str) -> torch.device:
     return torch.device(device_name)
 
 
-def compute_class_weights(train_frame: pd.DataFrame, class_names: list[str], device: torch.device) -> torch.Tensor:
+def compute_class_weights(
+    train_frame: pd.DataFrame,
+    class_names: list[str],
+    device: torch.device,
+    mode: str,
+) -> torch.Tensor | None:
+    if mode == "none":
+        return None
+    if mode not in CLASS_WEIGHT_MODES:
+        raise ValueError(f"Unsupported class weight mode: {mode}. Expected one of {sorted(CLASS_WEIGHT_MODES)}")
+
     counts = train_frame["category_name"].value_counts()
     weights = []
     total = float(len(train_frame))
     num_classes = float(len(class_names))
     for class_name in class_names:
         class_count = float(counts[class_name])
-        weights.append(total / (num_classes * class_count))
+        balanced_weight = total / (num_classes * class_count)
+        if mode == "balanced":
+            weights.append(balanced_weight)
+        elif mode == "sqrt_inv_frequency":
+            weights.append(float(np.sqrt(balanced_weight)))
+        else:
+            raise AssertionError(f"Unhandled class weight mode: {mode}")
     return torch.tensor(weights, dtype=torch.float32, device=device)
+
+
+def compute_sample_weights(train_frame: pd.DataFrame, class_names: list[str]) -> torch.Tensor:
+    counts = train_frame["category_name"].value_counts()
+    class_weights = {class_name: 1.0 / float(counts[class_name]) for class_name in class_names}
+    weights = [class_weights[str(class_name)] for class_name in train_frame["category_name"].tolist()]
+    return torch.tensor(weights, dtype=torch.double)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0, weight: torch.Tensor | None = None) -> None:
+        super().__init__()
+        self.gamma = gamma
+        if weight is None:
+            self.register_buffer("weight", None)
+        else:
+            self.register_buffer("weight", weight)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        log_probs = nn.functional.log_softmax(logits, dim=1)
+        probs = torch.exp(log_probs)
+        target_probs = probs.gather(dim=1, index=targets.unsqueeze(1)).squeeze(1)
+        cross_entropy = nn.functional.nll_loss(
+            log_probs,
+            targets,
+            weight=self.weight,
+            reduction="none",
+        )
+        focal_factor = torch.pow(1.0 - target_probs, self.gamma)
+        return (focal_factor * cross_entropy).mean()
+
+
+def build_criterion(
+    train_frame: pd.DataFrame,
+    class_names: list[str],
+    training_cfg: dict[str, Any],
+    device: torch.device,
+) -> nn.Module:
+    loss_name = str(training_cfg.get("loss", "cross_entropy")).lower()
+    if loss_name not in LOSS_FUNCTIONS:
+        raise ValueError(f"Unsupported loss: {loss_name}. Expected one of {sorted(LOSS_FUNCTIONS)}")
+
+    class_weight_mode = str(training_cfg.get("class_weight_mode", "balanced")).lower()
+    class_weights = compute_class_weights(
+        train_frame=train_frame,
+        class_names=class_names,
+        device=device,
+        mode=class_weight_mode,
+    )
+    if loss_name == "cross_entropy":
+        return nn.CrossEntropyLoss(weight=class_weights)
+    if loss_name == "focal":
+        return FocalLoss(gamma=float(training_cfg.get("focal_gamma", 2.0)), weight=class_weights)
+    raise AssertionError(f"Unhandled loss: {loss_name}")
+
+
+def build_training_diagnostics(training_cfg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "loss": str(training_cfg.get("loss", "cross_entropy")).lower(),
+        "class_weight_mode": str(training_cfg.get("class_weight_mode", "balanced")).lower(),
+        "train_sampler": str(training_cfg.get("train_sampler", "none")).lower(),
+        "focal_gamma": float(training_cfg.get("focal_gamma", 2.0)),
+    }
 
 
 def run_forward_check(model: nn.Module, loader: DataLoader, device: torch.device) -> dict[str, Any]:
@@ -575,6 +731,25 @@ def build_visibility_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return overrides
 
 
+def build_training_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    cli_pairs = {
+        "loss": args.loss,
+        "class_weight_mode": args.class_weight_mode,
+        "train_sampler": args.train_sampler,
+        "focal_gamma": args.focal_gamma,
+    }
+    return {key: value for key, value in cli_pairs.items() if value is not None}
+
+
+def build_image_ablation_params(args: argparse.Namespace) -> dict[str, Any]:
+    cli_pairs = {
+        "bbox_padding_fraction": args.image_ablation_bbox_padding_fraction,
+        "mask_feather": args.image_ablation_mask_feather,
+        "fill_color": args.image_ablation_fill_color,
+    }
+    return {key: value for key, value in cli_pairs.items() if value is not None}
+
+
 def append_visibility_suffix(experiment_name: str, visibility_summary: dict[str, Any], requested: bool) -> str:
     if not requested:
         return experiment_name
@@ -582,6 +757,35 @@ def append_visibility_suffix(experiment_name: str, visibility_summary: dict[str,
     if experiment_name.endswith(suffix):
         return experiment_name
     return f"{experiment_name}{suffix}"
+
+
+def append_suffix(experiment_name: str, suffix: str) -> str:
+    if experiment_name.endswith(suffix):
+        return experiment_name
+    return f"{experiment_name}{suffix}"
+
+
+def append_followup_suffixes(
+    experiment_name: str,
+    training_cfg: dict[str, Any],
+    image_ablation_name: str,
+    seed_override: int | None,
+) -> str:
+    class_weight_mode = str(training_cfg.get("class_weight_mode", "balanced")).lower()
+    train_sampler = str(training_cfg.get("train_sampler", "none")).lower()
+    loss_name = str(training_cfg.get("loss", "cross_entropy")).lower()
+
+    if class_weight_mode != "balanced":
+        experiment_name = append_suffix(experiment_name, f"_cw_{class_weight_mode}")
+    if train_sampler != "none":
+        experiment_name = append_suffix(experiment_name, f"_sampler_{train_sampler}")
+    if loss_name != "cross_entropy":
+        experiment_name = append_suffix(experiment_name, f"_loss_{loss_name}")
+    if image_ablation_name != "none":
+        experiment_name = append_suffix(experiment_name, f"_image_{image_ablation_name}")
+    if seed_override is not None:
+        experiment_name = append_suffix(experiment_name, f"_seed{seed_override}")
+    return experiment_name
 
 
 def build_visibility_sanity_checks(visibility_summary: dict[str, Any]) -> dict[str, bool]:
@@ -690,17 +894,28 @@ def train(
     smoke: bool,
     validate_only: bool,
     train_intervention_override: str | None = None,
+    seed_override: int | None = None,
+    training_overrides: dict[str, Any] | None = None,
+    image_ablation_override: str | None = None,
+    image_ablation_params: dict[str, Any] | None = None,
     visibility_overrides: dict[str, Any] | None = None,
     eval_only_checkpoint: str | None = None,
     checkpoint_results_root: str | None = None,
 ) -> Path:
+    if seed_override is not None:
+        config["seed"] = int(seed_override)
     set_seed(int(config.get("seed", 42)))
 
     baseline_experiment_name = str(config["experiment_name"])
     has_visibility_config = "visibility" in config
+    has_image_ablation_config = "image_ablation" in config
     configured_images_dir = Path(config["paths"]["images_dir"])
     output_root = Path(config["paths"]["output_root"])
     training_cfg = copy.deepcopy(config["training"])
+    training_overrides = training_overrides or {}
+    for key, value in training_overrides.items():
+        training_cfg[key] = value
+        config["training"][key] = value
     if train_intervention_override is not None:
         training_cfg["train_intervention"] = train_intervention_override
         config["training"]["train_intervention"] = train_intervention_override
@@ -712,6 +927,21 @@ def train(
     train_intervention_name = str(training_cfg.get("train_intervention", "none")).lower()
     if train_intervention_name != "none" and not config["experiment_name"].endswith(f"_{train_intervention_name}"):
         config["experiment_name"] = f"{config['experiment_name']}_{train_intervention_name}"
+
+    image_ablation_cfg = copy.deepcopy(config.get("image_ablation", {}) or {})
+    if image_ablation_override is not None:
+        image_ablation_cfg["mode"] = image_ablation_override
+    if image_ablation_params:
+        image_ablation_cfg.setdefault("params", {}).update(image_ablation_params)
+    image_ablation_name = str(image_ablation_cfg.get("mode", "none")).lower()
+    image_ablation_requested = bool(image_ablation_name != "none" or has_image_ablation_config)
+
+    config["experiment_name"] = append_followup_suffixes(
+        str(config["experiment_name"]),
+        training_cfg,
+        image_ablation_name=image_ablation_name,
+        seed_override=seed_override,
+    )
 
     visibility_settings = build_visibility_settings(config, visibility_overrides)
     visibility_requested = bool(visibility_settings.experiment_requested or has_visibility_config)
@@ -759,6 +989,15 @@ def train(
         dataset_root=configured_images_dir.parent,
         params=training_cfg.get("train_intervention_params", {}),
     )
+    image_ablation = build_image_ablation(
+        name=image_ablation_name,
+        dataset_root=configured_images_dir.parent,
+        params=image_ablation_cfg.get("params", {}),
+    )
+    config["image_ablation"] = image_ablation.summary() if image_ablation_requested else {"mode": "none"}
+    train_sampler_name = str(training_cfg.get("train_sampler", "none")).lower()
+    if train_sampler_name not in TRAIN_SAMPLERS:
+        raise ValueError(f"Unsupported train sampler: {train_sampler_name}. Expected one of {sorted(TRAIN_SAMPLERS)}")
     visibility_preprocessor = VisibilityPreprocessor(visibility_settings)
     visibility_summary = visibility_preprocessor.summary(dataframes)
     dataset_visibility_preprocessor = (
@@ -774,6 +1013,8 @@ def train(
         img_size=int(config["model"]["img_size"]),
         train_intervention=train_intervention,
         visibility_preprocessor=dataset_visibility_preprocessor,
+        image_ablation=image_ablation,
+        train_sampler_name=train_sampler_name,
         seed=int(config.get("seed", 42)),
     )
 
@@ -793,6 +1034,11 @@ def train(
         split_name: getattr(loader.dataset, "visibility_name", "none")
         for split_name, loader in loaders.items()
     }
+    split_image_ablation = {
+        split_name: getattr(loader.dataset, "image_ablation_name", "none")
+        for split_name, loader in loaders.items()
+    }
+    training_diagnostics = build_training_diagnostics(training_cfg)
     sanity_checks = {
         "train_intervention_only": all(
             intervention_name == "none"
@@ -801,6 +1047,7 @@ def train(
         ),
         "validation_and_test_images_unmodified_by_intervention": True,
         "test_domain_statistics_used": False,
+        "image_ablation_consistent_all_splits": len(set(split_image_ablation.values())) == 1,
         **build_visibility_sanity_checks(visibility_summary),
     }
     dataset_summary = {
@@ -816,6 +1063,9 @@ def train(
         "split_interventions": split_interventions,
         "visibility_preprocessing": visibility_summary,
         "split_visibility_preprocessing": split_visibility_preprocessing,
+        "image_ablation": image_ablation.summary(),
+        "split_image_ablation": split_image_ablation,
+        "training_diagnostics": training_diagnostics,
         "eval_only": eval_only_requested,
         "source_checkpoint": str(checkpoint_path_for_eval) if checkpoint_path_for_eval is not None else None,
         "sanity_checks": sanity_checks,
@@ -842,7 +1092,9 @@ def train(
             },
             "train_intervention": train_intervention.summary(),
             "visibility_preprocessing": visibility_summary,
+            "image_ablation": image_ablation.summary(),
             "training_settings": training_cfg,
+            "training_diagnostics": training_diagnostics,
             "eval_only": eval_only_requested,
             "source_checkpoint": str(checkpoint_path_for_eval) if checkpoint_path_for_eval is not None else None,
             "output_files": {
@@ -852,8 +1104,8 @@ def train(
                 "summary": str(run_dir / "summary.json"),
             },
             "notes": (
-                "Visibility hypothesis run. If eval_only is true, the checkpoint is fixed and no retraining is done; "
-                "otherwise the logged visibility preprocessing is part of the training and evaluation data pipeline."
+                "CCT20 experiment run. Logged fields record train-only interventions, visibility preprocessing, "
+                "image ablations, class weighting, sampling, loss settings, and whether evaluation used a fixed checkpoint."
             ),
         },
     )
@@ -862,8 +1114,15 @@ def train(
         print(json.dumps(dataset_summary, indent=2))
         return run_dir
 
-    class_weights = compute_class_weights(dataframes["train"], class_names, device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    train_sampler_name = str(training_cfg.get("train_sampler", "none")).lower()
+    if train_sampler_name not in TRAIN_SAMPLERS:
+        raise ValueError(f"Unsupported train sampler: {train_sampler_name}. Expected one of {sorted(TRAIN_SAMPLERS)}")
+    criterion = build_criterion(
+        train_frame=dataframes["train"],
+        class_names=class_names,
+        training_cfg=training_cfg,
+        device=device,
+    )
 
     eval_splits = ["val"] + [spec.name for spec in test_specs]
     if eval_only_requested:
@@ -893,6 +1152,8 @@ def train(
             "class_names": class_names,
             "train_intervention": train_intervention.summary(),
             "visibility_preprocessing": visibility_summary,
+            "image_ablation": image_ablation.summary(),
+            "training_diagnostics": training_diagnostics,
         }
 
         for split_name in eval_splits:
@@ -1000,6 +1261,8 @@ def train(
         "class_names": class_names,
         "train_intervention": train_intervention.summary(),
         "visibility_preprocessing": visibility_summary,
+        "image_ablation": image_ablation.summary(),
+        "training_diagnostics": training_diagnostics,
         "eval_only": False,
     }
 
@@ -1036,6 +1299,10 @@ def main() -> None:
         smoke=args.smoke,
         validate_only=args.validate_only,
         train_intervention_override=args.train_intervention,
+        seed_override=args.seed,
+        training_overrides=build_training_overrides(args),
+        image_ablation_override=args.image_ablation,
+        image_ablation_params=build_image_ablation_params(args),
         visibility_overrides=build_visibility_overrides(args),
         eval_only_checkpoint=args.eval_only_checkpoint,
         checkpoint_results_root=args.checkpoint_results_root,

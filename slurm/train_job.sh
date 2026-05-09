@@ -45,6 +45,33 @@ fi
 if [[ -n "${CHECKPOINT_RESULTS_ROOT:-}" ]]; then
   CMD+=(--checkpoint-results-root "$CHECKPOINT_RESULTS_ROOT")
 fi
+if [[ -n "${SEED:-}" ]]; then
+  CMD+=(--seed "$SEED")
+fi
+if [[ -n "${LOSS:-}" ]]; then
+  CMD+=(--loss "$LOSS")
+fi
+if [[ -n "${CLASS_WEIGHT_MODE:-}" ]]; then
+  CMD+=(--class-weight-mode "$CLASS_WEIGHT_MODE")
+fi
+if [[ -n "${TRAIN_SAMPLER:-}" ]]; then
+  CMD+=(--train-sampler "$TRAIN_SAMPLER")
+fi
+if [[ -n "${FOCAL_GAMMA:-}" ]]; then
+  CMD+=(--focal-gamma "$FOCAL_GAMMA")
+fi
+if [[ -n "${IMAGE_ABLATION:-}" ]]; then
+  CMD+=(--image-ablation "$IMAGE_ABLATION")
+fi
+if [[ -n "${IMAGE_ABLATION_BBOX_PADDING_FRACTION:-}" ]]; then
+  CMD+=(--image-ablation-bbox-padding-fraction "$IMAGE_ABLATION_BBOX_PADDING_FRACTION")
+fi
+if [[ -n "${IMAGE_ABLATION_MASK_FEATHER:-}" ]]; then
+  CMD+=(--image-ablation-mask-feather "$IMAGE_ABLATION_MASK_FEATHER")
+fi
+if [[ -n "${IMAGE_ABLATION_FILL_COLOR:-}" ]]; then
+  CMD+=(--image-ablation-fill-color "$IMAGE_ABLATION_FILL_COLOR")
+fi
 
 echo "Running on $(hostname)"
 echo "Command: ${CMD[*]}"

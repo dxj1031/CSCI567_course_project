@@ -366,7 +366,89 @@ The report writes a new artifact directory under `$PROJECT_ROOT/artifacts/visibi
 
 Do not interpret improvements unless they appear in `visibility_summary.csv` and the paired delta files. Scenario-dependent or backbone-dependent effects should be reported as such.
 
-## 13. Notes
+## 13. Follow-Up Experiments For The Final Analysis
+
+The next experiment suite is designed for a careful negative-result story: quantify uncertainty, test whether rare classes drive the gap, and diagnose whether the model is using animal pixels or scene context.
+
+### 13.1 Seed sweep for headline results
+
+Rerun the scenario-winning backbone from the capacity study with multiple seeds:
+
+- `cross_location -> resnet101`
+- `day_to_night -> resnet101`
+- `night_to_day -> resnet50`
+
+```bash
+export ACCOUNT=<project_id>
+export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
+export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
+export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
+export SEEDS="42 43 44"
+
+bash experiments/submit_seed_sweep.sh
+```
+
+Purpose: estimate run-to-run variation so small OOD changes are not overinterpreted as real effects.
+
+### 13.2 Rare-class and class-balance interventions
+
+Submit class-weight and sampling alternatives on the same scenario-winning backbones:
+
+```bash
+bash experiments/submit_class_balance_experiments.sh
+```
+
+The compared methods are:
+
+- `baseline_weighted`: current weighted cross-entropy behavior
+- `no_class_weights`: unweighted cross-entropy
+- `class_balanced_sampler`: inverse-frequency sampling with unweighted cross-entropy
+- `focal_balanced`: focal loss with balanced class weights
+
+Purpose: test whether classes such as `rodent`, `bird`, and `cat` fail mainly because of imbalance rather than because of the domain shift alone.
+
+### 13.3 Object-centric diagnostics
+
+Submit bbox-based image views on the same scenario-winning backbones:
+
+```bash
+bash experiments/submit_object_centric_diagnostics.sh
+```
+
+The compared image views are:
+
+- `none`: original full image
+- `object_crop`: crop to the union of annotation boxes
+- `foreground_only`: preserve annotated animal boxes and replace background with gray
+- `background_only`: replace annotated animal boxes with gray and preserve background
+
+Purpose: distinguish animal-shape reliance from background/context reliance. A strong `background_only` result would be evidence of shortcut learning; a strong `foreground_only` or `object_crop` result would support object-centric robustness.
+
+### 13.4 Validate and aggregate follow-ups
+
+The validate script only builds the matrix and performs the existing validate-only forward checks:
+
+```bash
+bash experiments/validate_followup_matrix.sh
+```
+
+After jobs finish:
+
+```bash
+bash experiments/build_followup_report.sh
+```
+
+This writes:
+
+- `followup_runs.csv`
+- `followup_split_metrics.csv`
+- `followup_generalization_metrics.csv`
+- `followup_seed_summary.csv`
+- `followup_per_class_f1.csv`
+- `followup_comparison.md`
+
+## 14. Notes
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
