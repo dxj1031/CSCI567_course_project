@@ -11,11 +11,13 @@ The repo intentionally keeps code, configs, job scripts, and lightweight artifac
 
 ## Repository Layout
 
-- `configs/`: experiment configs for baseline runs
-- `scripts/`: setup, sync, submit, and training entrypoints
-- `slurm/`: CARC job payload scripts
-- `src/cs567_cct20/`: reusable training code
-- `data_process/`: local handoff notebook and notation docs
+- `src/`: reusable Python package for CCT20 training, interventions, visibility, and image ablations
+- `configs/`: active experiment configs; legacy blur/brightness configs live in `configs/legacy/`
+- `scripts/`: direct command-line entrypoints for training, submission helpers, aggregation, and plotting
+- `jobs/`: CARC batch jobs and experiment matrices
+- `data/`: dataset preparation notebook, notes, and lightweight preprocessing utilities
+- `examples/`: small tracked visual/debug samples only
+- `outputs/`: ignored local outputs, paper assets, CARC result copies, and caches
 
 ## 1. Clone To CARC
 
@@ -35,7 +37,7 @@ Create the environment under the shared project directory:
 
 ```bash
 cd /project2/<PI>_<project_id>/cs567-cct20
-bash scripts/carc_setup_env.sh /project2/<PI>_<project_id>/envs/cs567-baseline
+bash scripts/setup_env.sh /project2/<PI>_<project_id>/envs/cs567-baseline
 ```
 
 The setup script installs:
@@ -54,7 +56,7 @@ Once `rclone` works on CARC, pull the dataset into a shared project location:
 export DRIVE_REMOTE=mydrive
 export DRIVE_PATH=shared/CS567/CCT20
 export DEST_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
-bash scripts/carc_sync_data.sh
+bash scripts/sync_data.sh
 ```
 
 This uses `rclone copy`, not `sync`, so it will not delete CARC-side files by accident.
@@ -65,7 +67,7 @@ Use this before the first full run to smoke test the environment and data paths:
 
 ```bash
 export ACCOUNT=<project_id>
-bash scripts/carc_interactive_gpu.sh
+bash scripts/gpu_shell.sh
 ```
 
 Inside the allocation:
@@ -78,7 +80,7 @@ module load conda
 export PYTHONPATH=$PWD/src
 export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
-/project2/<PI>_<project_id>/envs/cs567-baseline/bin/python scripts/train_baseline.py --config configs/cross_location_resnet18.yaml --validate-only
+/project2/<PI>_<project_id>/envs/cs567-baseline/bin/python scripts/train.py --config configs/cross_location_resnet18.yaml --validate-only
 ```
 
 ## 5. Submit GPU Jobs
@@ -105,7 +107,7 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 bash scripts/submit_train.sh configs/cross_location_resnet18.yaml
 ```
 
-Outputs land in `/scratch1/$USER/cs567_runs/<experiment>_<timestamp>/`. Copy the final metrics, plots, and checkpoints you want to keep into a shared artifacts directory under `/project2/<PI>_<project_id>/cs567-cct20/artifacts/`.
+Outputs land in `/scratch1/$USER/cs567_runs/<experiment>_<timestamp>/`. Copy the final metrics, plots, and checkpoints you want to keep into a shared artifacts directory under `/project2/<PI>_<project_id>/cs567-cct20/outputs/artifacts/`.
 
 ## 6. Current Baseline Configs
 
@@ -161,7 +163,7 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
 $ENV_PREFIX/bin/python scripts/compare_capacity.py \
   --results-root "$OUTPUT_ROOT" \
-  --output-dir "$PROJECT_ROOT/artifacts/capacity_comparison"
+  --output-dir "$PROJECT_ROOT/outputs/artifacts/capacity_comparison"
 ```
 
 This writes:
@@ -184,9 +186,9 @@ To generate more intuitive figures for the report, create plots directly from th
 export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 
-$ENV_PREFIX/bin/python scripts/plot_capacity_results.py \
-  --comparison-dir "$PROJECT_ROOT/artifacts/capacity_comparison" \
-  --output-dir "$PROJECT_ROOT/artifacts/capacity_plots"
+$ENV_PREFIX/bin/python scripts/plot_capacity.py \
+  --comparison-dir "$PROJECT_ROOT/outputs/artifacts/capacity_comparison" \
+  --output-dir "$PROJECT_ROOT/outputs/artifacts/capacity_plots"
 ```
 
 This writes:
@@ -206,7 +208,7 @@ Supported `training.train_intervention` values:
 - `background_perturbation`: for training images only, preserve scaled annotation bbox regions and apply light blur/noise/contrast perturbation outside the bbox
 - `combined`: apply `background_perturbation` followed by `photometric_randomization`
 
-Legacy `bbox_blur` and `brightness_aligned` configs remain in the repo for provenance, but `experiments/submit_train_time_interventions.sh` no longer submits them.
+Legacy `bbox_blur` and `brightness_aligned` configs remain in `configs/legacy/` for provenance, but `jobs/train_interventions.sh` no longer submits them.
 
 The same architecture, optimizer, epochs, seed, splits, and evaluation code are used across variants. The experiment grid covers all combinations of:
 
@@ -218,7 +220,7 @@ Install the baseline dependencies into the CARC environment if needed:
 
 ```bash
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
-$ENV_PREFIX/bin/python -m pip install -r requirements-baseline.txt
+$ENV_PREFIX/bin/python -m pip install -r requirements.txt
 ```
 
 Then submit the full train-time intervention suite:
@@ -230,7 +232,7 @@ export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
-bash experiments/submit_train_time_interventions.sh
+bash jobs/train_interventions.sh
 ```
 
 Before submitting long jobs, run the validate-only matrix in an interactive allocation to verify paths, split filters, interventions, and one forward pass for every config:
@@ -241,7 +243,7 @@ export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_validate_only
 
-bash experiments/validate_train_time_intervention_matrix.sh
+bash jobs/validate_interventions.sh
 ```
 
 Every run writes `dataset_summary.json` with `train_intervention`, `split_interventions`, and sanity checks confirming validation/test splits use no intervention.
@@ -255,10 +257,10 @@ export PROJECT_ROOT=/project2/<PI>_<project_id>/cs567-cct20
 export ENV_PREFIX=/project2/<PI>_<project_id>/envs/cs567-baseline
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 
-bash experiments/build_train_time_intervention_report.sh
+bash jobs/report_interventions.sh
 ```
 
-By default this writes artifacts to a new timestamped directory under `$PROJECT_ROOT/artifacts/`, for example `$PROJECT_ROOT/artifacts/train_time_diversification_20260503_121500`. Set `ARTIFACT_ROOT` only when you intentionally want a specific new output directory.
+By default this writes artifacts to a new timestamped directory under `$PROJECT_ROOT/outputs/artifacts/`, for example `$PROJECT_ROOT/outputs/artifacts/train_time_diversification_20260503_121500`. Set `ARTIFACT_ROOT` only when you intentionally want a specific new output directory.
 
 - `intervention_runs.csv`
 - `intervention_split_metrics.csv`
@@ -291,7 +293,7 @@ The scatter plot uses:
 
 The visibility suite tests whether low-light or low-visibility inputs explain the remaining generalization failures better than background or brightness mismatch alone.
 
-Supported visibility flags on `scripts/train_baseline.py`:
+Supported visibility flags on `scripts/train.py`:
 
 - `--visibility-mode {original,gamma,clahe,gamma_clahe}`
 - `--visibility-scope {test_only,train_test_consistent,night_only}`
@@ -321,36 +323,36 @@ export PYTHONNOUSERSITE=1
 # Experiment 1: fixed-checkpoint test-time enhancement only.
 # BASELINE_RESULTS_ROOT should contain the original baseline checkpoint run dirs.
 export BASELINE_RESULTS_ROOT="$OUTPUT_ROOT"
-bash "$PROJECT_ROOT/experiments/submit_visibility_test_only.sh"
+bash "$PROJECT_ROOT/jobs/visibility_test.sh"
 
 # Experiment 2: retrain with consistent train/eval enhancement.
-bash "$PROJECT_ROOT/experiments/submit_visibility_train_test_consistent.sh"
+bash "$PROJECT_ROOT/jobs/visibility_train_test.sh"
 
 # Experiment 3: retrain with night-only enhancement.
-bash "$PROJECT_ROOT/experiments/submit_visibility_night_only.sh"
+bash "$PROJECT_ROOT/jobs/visibility_night.sh"
 ```
 
 To submit all three groups in one shell:
 
 ```bash
-bash "$PROJECT_ROOT/experiments/submit_visibility_experiments.sh"
+bash "$PROJECT_ROOT/jobs/visibility_all.sh"
 ```
 
 Before long submissions, run validate-only checks in an interactive allocation:
 
 ```bash
 export OUTPUT_ROOT=/scratch1/$USER/cs567_visibility_validate_only
-bash "$PROJECT_ROOT/experiments/validate_visibility_matrix.sh"
+bash "$PROJECT_ROOT/jobs/validate_visibility.sh"
 ```
 
 After the runs finish, aggregate and plot the results:
 
 ```bash
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
-bash "$PROJECT_ROOT/experiments/build_visibility_report.sh"
+bash "$PROJECT_ROOT/jobs/report_visibility.sh"
 ```
 
-The report writes a new artifact directory under `$PROJECT_ROOT/artifacts/visibility_hypothesis_<timestamp>` containing:
+The report writes a new artifact directory under `$PROJECT_ROOT/outputs/artifacts/visibility_hypothesis_<timestamp>` containing:
 
 - `visibility_summary.csv`: tidy in-domain/OOD/gap/normalized-gap table
 - `visibility_runs.csv`
@@ -386,7 +388,7 @@ export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
 export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 export SEEDS="42 43 44"
 
-bash experiments/submit_seed_sweep.sh
+bash jobs/seed_sweep.sh
 ```
 
 Purpose: estimate run-to-run variation so small OOD changes are not overinterpreted as real effects.
@@ -396,7 +398,7 @@ Purpose: estimate run-to-run variation so small OOD changes are not overinterpre
 Submit class-weight and sampling alternatives on the same scenario-winning backbones:
 
 ```bash
-bash experiments/submit_class_balance_experiments.sh
+bash jobs/class_balance.sh
 ```
 
 The compared methods are:
@@ -413,7 +415,7 @@ Purpose: test whether classes such as `rodent`, `bird`, and `cat` fail mainly be
 Submit bbox-based image views on the same scenario-winning backbones:
 
 ```bash
-bash experiments/submit_object_centric_diagnostics.sh
+bash jobs/object_diagnostics.sh
 ```
 
 The compared image views are:
@@ -430,13 +432,13 @@ Purpose: distinguish animal-shape reliance from background/context reliance. A s
 The validate script only builds the matrix and performs the existing validate-only forward checks:
 
 ```bash
-bash experiments/validate_followup_matrix.sh
+bash jobs/validate_followup.sh
 ```
 
 After jobs finish:
 
 ```bash
-bash experiments/build_followup_report.sh
+bash jobs/report_followup.sh
 ```
 
 This writes:

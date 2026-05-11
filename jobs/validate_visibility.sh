@@ -22,7 +22,7 @@ for scenario in "${SCENARIOS[@]}"; do
       for mode in "${MODES[@]}"; do
         config="configs/${scenario}_${backbone}.yaml"
         echo "Validating visibility matrix: $config scope=$scope mode=$mode"
-        "$ENV_PREFIX/bin/python" scripts/train_baseline.py \
+        "$ENV_PREFIX/bin/python" scripts/train.py \
           --config "$config" \
           --train-intervention none \
           --visibility-scope "$scope" \

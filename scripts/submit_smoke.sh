@@ -22,5 +22,4 @@ sbatch \
   --mem="${MEMORY:-32G}" \
   --time="${TIME_LIMIT:-00:30:00}" \
   --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",ENV_PREFIX="$ENV_PREFIX",DATA_ROOT="$DATA_ROOT",OUTPUT_ROOT="$OUTPUT_ROOT",CONFIG_PATH="$CONFIG_PATH",SMOKE=1 \
-  "$PROJECT_ROOT/slurm/train_job.sh"
-
+  "$PROJECT_ROOT/jobs/train_job.sh"

@@ -7,14 +7,23 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.matplotlib-cache/
 
+# Local outputs and generated caches
+outputs/artifacts/
+outputs/paper/
+outputs/carc/
+outputs/cache/
 artifacts/
+paper_outputs/
+.matplotlib-cache/
 runs/
 logs/
 tmp/
-paper_outputs/
 
+# Local CCT20 dataset copies
+/data/CCT20/annotations/
+/data/CCT20/images/
+/data/CCT20/processed/
 data_process/CCT20/annotations/
 data_process/CCT20/images/
 data_process/CCT20/processed/

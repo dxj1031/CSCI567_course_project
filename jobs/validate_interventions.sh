@@ -25,7 +25,7 @@ for scenario in "${SCENARIOS[@]}"; do
         train_intervention="$variant"
       fi
       echo "Validating $config with train_intervention=$train_intervention"
-      "$ENV_PREFIX/bin/python" scripts/train_baseline.py \
+      "$ENV_PREFIX/bin/python" scripts/train.py \
         --config "$config" \
         --train-intervention "$train_intervention" \
         --validate-only

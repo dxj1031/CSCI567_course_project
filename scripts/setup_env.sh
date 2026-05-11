@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: bash scripts/carc_setup_env.sh /project2/<PI>_<project_id>/envs/cs567-baseline"
+  echo "Usage: bash scripts/setup_env.sh /project2/<PI>_<project_id>/envs/cs567-baseline"
   exit 1
 fi
 
@@ -20,7 +20,7 @@ export PYTHONNOUSERSITE=1
 
 "$ENV_PREFIX/bin/python" -m pip install --upgrade pip setuptools wheel
 "$ENV_PREFIX/bin/python" -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
-"$ENV_PREFIX/bin/python" -m pip install --no-cache-dir -r "$PROJECT_ROOT/requirements-baseline.txt"
+"$ENV_PREFIX/bin/python" -m pip install --no-cache-dir -r "$PROJECT_ROOT/requirements.txt"
 
 "$ENV_PREFIX/bin/python" - <<'PY'
 import torch

@@ -25,7 +25,7 @@ winner_backbone() {
 
 run_validate() {
   echo "Validating: $*"
-  "$ENV_PREFIX/bin/python" scripts/train_baseline.py "$@" --validate-only
+  "$ENV_PREFIX/bin/python" scripts/train.py "$@" --validate-only
 }
 
 for scenario in "${SCENARIOS[@]}"; do

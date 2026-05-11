@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
-    from plot_capacity_results import setup_plot_style
+    from plot_capacity import setup_plot_style
 except ModuleNotFoundError:
     plt = None
     sns = None

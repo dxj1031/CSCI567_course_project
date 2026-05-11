@@ -13,7 +13,7 @@ cd "$PROJECT_ROOT"
 export PYTHONPATH="$PROJECT_ROOT/src"
 export PYTHONNOUSERSITE=1
 
-CMD=("$ENV_PREFIX/bin/python" scripts/train_baseline.py --config "$CONFIG_PATH")
+CMD=("$ENV_PREFIX/bin/python" scripts/train.py --config "$CONFIG_PATH")
 
 if [[ "${SMOKE:-0}" == "1" ]]; then
   CMD+=(--smoke)

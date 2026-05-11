@@ -14,7 +14,7 @@ fi
 
 export PYTHONNOUSERSITE=1
 
-"$ENV_PREFIX/bin/python" "$PROJECT_ROOT/data_processing/background_intervention.py" \
+"$ENV_PREFIX/bin/python" "$PROJECT_ROOT/data/background_intervention.py" \
   --source-root "$SOURCE_DATA_ROOT" \
   --output-root "$VARIANT_DATA_ROOT" \
   --variant-name dataset_bbox_bg \
@@ -22,7 +22,7 @@ export PYTHONNOUSERSITE=1
   --box-feather "${BBOX_BG_BOX_FEATHER:-3.0}" \
   --bbox-padding-fraction "${BBOX_BG_PADDING_FRACTION:-0.02}"
 
-"$ENV_PREFIX/bin/python" "$PROJECT_ROOT/data_processing/brightness_alignment.py" \
+"$ENV_PREFIX/bin/python" "$PROJECT_ROOT/data/brightness_alignment.py" \
   --source-root "$SOURCE_DATA_ROOT" \
   --output-root "$VARIANT_DATA_ROOT" \
   --variant-name dataset_histmatch \

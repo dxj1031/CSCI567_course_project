@@ -1,8 +1,8 @@
 {
   "variant_name": "dataset_bbox_bg_test10",
-  "source_root": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\source",
-  "resolved_source_images_dir": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\source\\images",
-  "variant_root": "E:\\CSCI567_course_project_local\\bbox_blur_test_10_20260502_163450\\output\\dataset_bbox_bg_test10",
+  "source_root": "E:\\CSCI567_course_project_local\\examples\\bbox_blur_test\\source",
+  "resolved_source_images_dir": "E:\\CSCI567_course_project_local\\examples\\bbox_blur_test\\source\\images",
+  "variant_root": "E:\\CSCI567_course_project_local\\examples\\bbox_blur_test\\output\\dataset_bbox_bg_test10",
   "num_images_processed": 10,
   "intervention": {
     "type": "bbox_background_blur",
