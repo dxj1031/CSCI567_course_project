@@ -1,4 +1,4 @@
-# CS567 CCT20 Baseline
+#  CSCI 567 final project
 
 This repository is organized for the workflow we agreed on:
 
