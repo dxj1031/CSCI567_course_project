@@ -20,6 +20,35 @@ The repo intentionally keeps code, configs, job scripts, and lightweight artifac
 - `results/`: curated report-ready CSV, figure, and markdown outputs
 - `outputs/`: ignored local outputs, paper assets, CARC result copies, and caches
 
+## Data Preparation Contribution
+
+This repository uses the official CCT-20 split annotation files and converts them into standardized image-level CSV tables before training. The data preparation work is tracked in:
+
+- `data/cct20_data_prep.ipynb`: notebook that builds the processed split CSV files, label mapping, and preprocessing metadata.
+- `data/CCT20_DATA_NOTATION.md`: handoff document that defines the split construction, label-collapse rule, day/night labeling rule, cleaning rules, output contract, and known caveats.
+
+Expected CCT-20 layout after downloading the dataset:
+
+```text
+CCT20/
+├── images/
+└── annotations/
+    ├── train_annotations.json
+    ├── cis_val_annotations.json
+    ├── trans_val_annotations.json
+    ├── cis_test_annotations.json
+    └── trans_test_annotations.json
+```
+
+To run the data preparation notebook locally:
+
+```bash
+export DATA_ROOT=/path/to/CCT20
+jupyter notebook data/cct20_data_prep.ipynb
+```
+
+The generated CSV and JSON metadata files are written to `$DATA_ROOT/processed/`.
+
 ## Intervention Coverage
 
 The repo contains code and CARC job coverage for the 11 non-original intervention conditions used in the report story:
