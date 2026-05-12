@@ -132,15 +132,15 @@ Rationale: remove near-duplicate burst frames from camera trap sequences.
 
 Outputs under `CCT20/processed/`:
 
-- `cct20_clean_all.csv`：清洗后全量
-- `cct20_train.csv`：训练集
-- `cct20_val.csv`：验证集
-- `cct20_cis.csv`：同地点测试域
-- `cct20_trans.csv`：跨地点测试域
-- `cct20_train_day.csv`：训练集中的白天子集（时间区间由 DAY_TIME_RANGES 定义）
-- `cct20_train_night.csv`：训练集中的夜间子集（时间区间由 NIGHT_TIME_RANGES 定义）
-- `label_mapping.json`：类别到数字标签映射
-- `data_processing_spec.json`：本次清洗配置与输入输出元信息
+- `cct20_clean_all.csv`: cleaned full dataset
+- `cct20_train.csv`: training set
+- `cct20_val.csv`: validation set
+- `cct20_cis.csv`: same-location test set
+- `cct20_trans.csv`: cross-location test set
+- `cct20_train_day.csv`: daytime subset of the training set, defined by `DAY_TIME_RANGES`
+- `cct20_train_night.csv`: nighttime subset of the training set, defined by `NIGHT_TIME_RANGES`
+- `label_mapping.json`: mapping from class names to numeric labels
+- `data_processing_spec.json`: preprocessing configuration, input metadata, and output metadata
 
 Per-dataset class statistics:
 
