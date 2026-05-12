@@ -1,0 +1,4 @@
+scenario,full_image_ood_accuracy,object_crop_ood_accuracy,object_crop_delta_pp,full_image_ood_macro_f1,object_crop_ood_macro_f1,object_crop_delta_macro_f1,full_image_normalized_gap,object_crop_normalized_gap,object_crop_delta_gap,background_only_ood_accuracy,foreground_only_ood_accuracy
+Cross-location,0.5588,0.7451,18.6,0.4470,0.6205,0.1736,0.2203,0.0799,-0.1404,0.4350,0.6070
+Day -> night,0.5224,0.7126,19.0,0.4444,0.5487,0.1043,0.2739,0.1060,-0.1680,0.5060,0.5141
+Night -> day,0.4787,0.5878,10.9,0.4471,0.5375,0.0904,0.3217,0.1818,-0.1399,0.3465,0.4447

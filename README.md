@@ -17,7 +17,31 @@ The repo intentionally keeps code, configs, job scripts, and lightweight artifac
 - `jobs/`: CARC batch jobs and experiment matrices
 - `data/`: dataset preparation notebook, notes, and lightweight preprocessing utilities
 - `examples/`: small tracked visual/debug samples only
+- `results/`: curated report-ready CSV, figure, and markdown outputs
 - `outputs/`: ignored local outputs, paper assets, CARC result copies, and caches
+
+## Intervention Coverage
+
+The repo contains code and CARC job coverage for the 11 non-original intervention conditions used in the report story:
+
+| Group | Conditions | Primary job | Validation job |
+|---|---|---|---|
+| Legacy appearance/context probes | `bbox_blur`, `brightness_aligned` | `jobs/legacy_alignment.sh` | `jobs/validate_legacy_alignment.sh` |
+| Train-time diversification | `photometric_randomization`, `background_perturbation`, `combined` | `jobs/train_interventions.sh` | `jobs/validate_interventions.sh` |
+| Visibility enhancement | `gamma`, `clahe`, `gamma_clahe` | `jobs/visibility_all.sh` | `jobs/validate_visibility.sh` |
+| Object-centric diagnostics | `foreground_only`, `background_only`, `object_crop` | `jobs/object_diagnostics.sh` | `jobs/validate_followup.sh` |
+
+To submit the full 11-condition matrix from one entrypoint:
+
+```bash
+bash jobs/interventions_all.sh
+```
+
+To run the validate-only checks for all intervention families:
+
+```bash
+bash jobs/validate_all_interventions.sh
+```
 
 ## 1. Clone To CARC
 
@@ -208,7 +232,7 @@ Supported `training.train_intervention` values:
 - `background_perturbation`: for training images only, preserve scaled annotation bbox regions and apply light blur/noise/contrast perturbation outside the bbox
 - `combined`: apply `background_perturbation` followed by `photometric_randomization`
 
-Legacy `bbox_blur` and `brightness_aligned` configs remain in `configs/legacy/` for provenance, but `jobs/train_interventions.sh` no longer submits them.
+Legacy `bbox_blur` and `brightness_aligned` configs remain in `configs/legacy/` for provenance and can be submitted through `jobs/legacy_alignment.sh`. The active distribution-diversification matrix in `jobs/train_interventions.sh` keeps only train-time perturbations that preserve the original validation/test images.
 
 The same architecture, optimizer, epochs, seed, splits, and evaluation code are used across variants. The experiment grid covers all combinations of:
 
