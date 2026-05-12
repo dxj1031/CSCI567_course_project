@@ -5,14 +5,15 @@ This repository is organized for the workflow we agreed on:
 - local machine + VSCode for editing
 - GitHub for shared code
 - USC CARC for Conda environments and GPU training
-- Google Drive for the shared dataset source
+- Official public CCT-20 dataset release for the raw dataset source
 
-The repo intentionally keeps code, configs, job scripts, and lightweight artifacts only. Dataset files should stay on Google Drive and on CARC storage, not in GitHub.
+The repo intentionally keeps code, configs, job scripts, and lightweight artifacts only. 
+Raw CCT-20 dataset files should be downloaded from the official public benchmark release and stored locally or on CARC storage, not in GitHub.
 
 ## Repository Layout
 
 - `src/`: reusable Python package for CCT20 training, interventions, visibility, and image ablations
-- `configs/`: active experiment configs; legacy blur/brightness configs live in `configs/legacy/`
+- `configs/`: active expexriment configs; legacy blur/brightness configs live in `configs/legacy/`
 - `scripts/`: direct command-line entrypoints for training, submission helpers, aggregation, and plotting
 - `jobs/`: CARC batch jobs and experiment matrices
 - `data/`: dataset preparation notebook, notes, and lightweight preprocessing utilities
@@ -20,14 +21,16 @@ The repo intentionally keeps code, configs, job scripts, and lightweight artifac
 - `results/`: curated report-ready CSV, figure, and markdown outputs
 - `outputs/`: ignored local outputs, paper assets, CARC result copies, and caches
 
-## Data Preparation Contribution
+## Dataset Source
 
-This repository uses the official CCT-20 split annotation files and converts them into standardized image-level CSV tables before training. The data preparation work is tracked in:
+This project uses the CCT-20 benchmark subset of the Caltech Camera Traps dataset. The benchmark subset was introduced in Beery et al. 2018, and the benchmark images were downsized to a maximum of 1024 pixels on one side.
 
-- `data/cct20_data_prep.ipynb`: notebook that builds the processed split CSV files, label mapping, and preprocessing metadata.
-- `data/CCT20_DATA_NOTATION.md`: handoff document that defines the split construction, label-collapse rule, day/night labeling rule, cleaning rules, output contract, and known caveats.
+The raw image files and official annotation metadata are not stored in this GitHub repository. Download them from the official public CCT-20 benchmark release:
 
-Expected CCT-20 layout after downloading the dataset:
+- Benchmark images, about 6GB: https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_all_images_sm.tar.gz
+- Metadata files for train/val/cis/trans splits, about 3MB: https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_annotations.tar.gz
+
+After downloading and extracting the files, organize the dataset as:
 
 ```text
 CCT20/
@@ -39,6 +42,13 @@ CCT20/
     ├── cis_test_annotations.json
     └── trans_test_annotations.json
 ```
+
+## Data Preparation Contribution
+
+This repository uses the official CCT-20 split annotation files and converts them into standardized image-level CSV tables before training. The data preparation work is tracked in:
+
+- `data/cct20_data_prep.ipynb`: notebook that builds the processed split CSV files, label mapping, and preprocessing metadata.
+- `data/CCT20_DATA_NOTATION.md`: handoff document that defines the split construction, label-collapse rule, day/night labeling rule, cleaning rules, output contract, and known caveats.
 
 To run the data preparation notebook locally:
 
@@ -74,7 +84,7 @@ bash jobs/validate_all_interventions.sh
 
 ## 1. Clone To CARC
 
-Use a shared project directory on CARC:
+Use a CARC project directory:
 
 ```bash
 module purge
@@ -86,7 +96,7 @@ cd cs567-cct20
 
 ## 2. Build The CARC Conda Environment
 
-Create the environment under the shared project directory:
+Create the environment under the CARC project directory:
 
 ```bash
 cd /project2/<PI>_<project_id>/cs567-cct20
@@ -99,20 +109,52 @@ The setup script installs:
 - CUDA-enabled `torch`, `torchvision`, `torchaudio`
 - `pandas`, `scikit-learn`, `pillow`, `matplotlib`, `seaborn`, `tqdm`, `pyyaml`
 
-## 3. Configure Google Drive Access
+## 3. Prepare The CCT-20 Dataset
 
-Follow USC CARC's `rclone` guide to configure the Google Drive remote on your local machine, then copy `rclone.conf` to CARC.
+Download the official CCT-20 benchmark images and metadata from the links in the Dataset Source section.
 
-Once `rclone` works on CARC, pull the dataset into a shared project location:
+On CARC, one possible setup is:
 
 ```bash
-export DRIVE_REMOTE=mydrive
-export DRIVE_PATH=shared/CS567/CCT20
-export DEST_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
-bash scripts/sync_data.sh
+export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+mkdir -p "$DATA_ROOT"
+
+cd "$DATA_ROOT"
+
+wget https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_all_images_sm.tar.gz
+wget https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_annotations.tar.gz
+
+tar -xzf eccv_18_all_images_sm.tar.gz
+tar -xzf eccv_18_annotations.tar.gz
 ```
 
-This uses `rclone copy`, not `sync`, so it will not delete CARC-side files by accident.
+After extraction, arrange the files so that the final dataset layout is:
+
+```text
+$DATA_ROOT/
+├── images/
+└── annotations/
+    ├── train_annotations.json
+    ├── cis_val_annotations.json
+    ├── trans_val_annotations.json
+    ├── cis_test_annotations.json
+    └── trans_test_annotations.json
+```
+
+Then run the preprocessing notebook:
+
+```bash
+export DATA_ROOT=/project2/<PI>_<project_id>/datasets/CCT20
+jupyter notebook data/cct20_data_prep.ipynb
+```
+
+The processed CSV and JSON metadata files will be written to:
+
+```text
+$DATA_ROOT/processed/
+```
+
+Do not commit raw images, official annotation files, or generated processed CSV files to GitHub.
 
 ## 4. Launch An Interactive GPU Session
 
@@ -160,7 +202,7 @@ export OUTPUT_ROOT=/scratch1/$USER/cs567_runs
 bash scripts/submit_train.sh configs/cross_location_resnet18.yaml
 ```
 
-Outputs land in `/scratch1/$USER/cs567_runs/<experiment>_<timestamp>/`. Copy the final metrics, plots, and checkpoints you want to keep into a shared artifacts directory under `/project2/<PI>_<project_id>/cs567-cct20/outputs/artifacts/`.
+Outputs land in `/scratch1/$USER/cs567_runs/<experiment>_<timestamp>/`. Copy the final metrics and plots you want to keep into an artifact directory under `/project2/<PI>_<project_id>/cs567-cct20/outputs/artifacts/`. Large checkpoints should remain outside GitHub.
 
 ## 6. Current Baseline Configs
 
@@ -507,7 +549,7 @@ This writes:
 
 - Set `PYTHONPATH=$PROJECT_ROOT/src` before running Python entrypoints on CARC.
 - Prefer calling `$ENV_PREFIX/bin/python` directly on CARC so user-site packages do not leak in.
-- Keep the original Google Drive dataset read-only.
+- Keep the original downloaded CCT-20 dataset read-only.
 - Train-time interventions must not preprocess validation/test data or fit statistics from validation/test domains.
 - Keep editing code locally in VSCode and sync through GitHub.
 - Use CARC OnDemand only when you need remote IDE access or quick remote inspection.
