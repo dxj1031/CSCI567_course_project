@@ -12,6 +12,13 @@ The goal is to produce reproducible, image-level classification tables for:
 
 ## 2. Input Files
 
+The raw images and official split metadata should be downloaded from the public CCT-20 benchmark release before running the preprocessing notebook. This repository does not store raw images or official annotation JSON files.
+
+Official CCT-20 benchmark files:
+
+- Benchmark images: https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_all_images_sm.tar.gz
+- Metadata files for train/val/cis/trans splits: https://storage.googleapis.com/public-datasets-lila/caltechcameratraps/eccv_18_annotations.tar.gz
+
 Expected directory:
 
 ```text
